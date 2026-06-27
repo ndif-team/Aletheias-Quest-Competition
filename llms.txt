@@ -1,0 +1,397 @@
+# Aletheia's Quest — guide for AI agents helping participants
+
+You are an AI agent (Claude) helping someone **compete** in *Aletheia's Quest*, a
+deception-detection competition. This file is your map: the competition, the repo,
+how to craft and submit a method, how NDIF/nnsight work, and how to diagnose the
+errors people actually hit. Read it before answering, and prefer the patterns here
+over guessing — the runtime (NDIF + the sandbox) has sharp edges this file records.
+
+When a participant is stuck in a way this file doesn't cover, point them to the
+**[nnsight tutorials](https://nnsight.net/tutorials/)**, **[nnsight.net](https://nnsight.net)**,
+the **[Discord](https://discord.gg/MfjQbAErEG)**, or the **office hours** (Tues & Fri,
+1 PM ET — see the README). Don't invent NDIF/nnsight behavior; verify or defer.
+
+---
+
+## 1. What the competition is
+
+Build a **deception detector**. For each conversation in a held-out eval set, output
+the probability that the assistant's **final message** is *deceptive*. You build the
+detector with [nnsight](https://nnsight.net) and run the heavy model compute remotely
+on [NDIF](https://ndif.us); you submit a notebook, the leaderboard runs it against
+private data and scores it.
+
+**To compete you must be an official participant.** Apply at
+**[aletheias-quest.github.io](https://aletheias-quest.github.io/)**; the organizers
+issue you an **NDIF API key** for the competition cluster (this key authenticates
+your remote traces — it's also your leaderboard identity). Standings live at the
+**[leaderboard](https://ndif-leaderboard-dev.hf.space/)**.
+
+The competition HF org (datasets live here): **<https://huggingface.co/aletheias-quest>**.
+
+### Competition facts (apply, prizes, dates, eligibility, rules)
+Authoritative source: **<https://aletheias-quest.github.io/>** (details may change; defer to it).
+
+- **The framing.** Detect when an LLM *lies* — "the assistant lies if it states something it
+  believes to be false." You get **black-box and white-box** access to a suite of LLMs
+  ("**model organisms**") induced to lie in different ways. Methods are categorized as
+  **white-box** (use activations/weights) or **black-box** (query-only).
+- **How to apply.** Application form: <https://forms.office.com/r/BXVwPEweJi> (rolling; rated on
+  team + technical approach; NDIF API access granted on a needs basis). Contact:
+  **competition@cadenzalabs.org** or the Discord.
+- **Timeline (2026).** Apply opens **Jun 4**, closes **Jun 21**; competition **Jun 29 → Jul 26**
+  (main deadline); **bonus week** (surprise task) **Jul 27 → Jul 31**; invite-only **awards Aug 25**
+  in Boston.
+- **Prizes: $50,000 total**, split evenly among a team's members; a team can place in multiple
+  categories and **prizes stack**. Categories: **white-box** (1st/2nd/3rd), **black-box**
+  (1st/2nd/3rd), **weekly leaderboard** (1st/2nd/3rd), **judge's awards** (Novelty, Scalability).
+  **All require ranking above the 4 baseline methods.**
+- **Scoring.** Primary = **mean balanced accuracy** across datasets; tie-break = **average AUROC**;
+  computed per *(model organism, dataset)* unit, averaged across all datasets.
+- **Eligibility.** 18+; not a US-sanctioned/restricted party; not an organizer or dataset builder;
+  one team per person; winners pass Northeastern's Restricted Party Screening; government employees
+  need an employer release before award.
+- **Method rules (these constrain your approach).** *Allowed:* querying via NDIF/nnsight,
+  read/write activations at any layer, using weights + LoRA adapters, **tuning detector
+  *parameters* per organism (documented)**, prompts from a *general* hypothesis. *Prohibited:*
+  exfiltrating test data; reading model design docs/training data; **fundamentally different
+  detection *logic* per organism**; prompts crafted from organism-specific behavioral analysis;
+  **external API calls at inference**; **fine-tuning the hosted models**; organism-specific tricks
+  that don't generalize. (Per-organism *parameters* yes; per-organism *logic* no.)
+- **What you submit.** One notebook (one detector per organism) + trained params/supplemental data,
+  a **report** of your method + per-organism choices, **reproducible training code**, and a
+  compliance form with your team number. ≤ **200 MB**; daily submissions may be rate-limited. All
+  submissions published **MIT-licensed** (you keep authorship; organizers get a perpetual
+  royalty-free license to publish).
+- **Organizers/sponsors.** Cadenza Labs, NDIF (Northeastern), Schmidt Sciences. Leads: Walter
+  Laurito & Kieron Kretschmar (Cadenza Labs), Jaden Fiotto-Kaufman (NDIF), Peter Hase (Schmidt
+  Sciences); advisor David Bau (NDIF Director).
+
+---
+
+## 2. Repo map
+
+| Path | What it is |
+|---|---|
+| `submission/` | **What you submit.** Put your one notebook here. `util.py` lives here too. |
+| `submission/util.py` | The toolkit (Section 5). Ships with your submission; import it from your notebook. |
+| `submission/requirements.txt` | Your extra pip deps, installed into the per-job venv before your notebook runs. |
+| `submission/example.ipynb` | Minimal working baseline (random scores) — the template to copy. |
+| `baselines/` | Reference methods (mean-difference probe, llm-judge, self-eval, …) with `.npz` weights. Copy one into `submission/` to use it. |
+| `tutorials/` | Walkthroughs: setup, predicting, training a probe. Start here to learn nnsight + the data. |
+| `dry.yaml` | Which datasets `python submit.py --dry` rehearses on (edit to test on different dev sets). |
+| `submit.py` | Packages the repo and submits; `--dry` runs the full pipeline locally first. |
+| `leaderboard/` | The runner/scoring service. You don't touch this; it's how submissions are executed. |
+
+A submission is **exactly one notebook in `submission/`** plus whatever helper files it
+needs (`util.py`, probe weights, modules). The runner executes that notebook top-to-bottom.
+**More than one `.ipynb` in `submission/` is rejected** (caught before it runs, so it
+costs no attempt) — so if you start from `example.ipynb`, rename or delete it once your
+own notebook is in place, or the two together trip the rejection.
+
+---
+
+## 3. The task & the data
+
+### Splits
+- **dev** — **public**, with labels. Tune your method here; you can score yourself
+  locally. Browse the **[dev collection](https://huggingface.co/collections/aletheias-quest/dev-instructed-deception)**.
+- **dev-test** and **validation** — **private** (same format, labels withheld). These
+  are what run on the **leaderboard**. You can't read them; your notebook runs *over*
+  them in the sandbox and can't exfiltrate them.
+
+`dev` covers the **`instructed-deception`** scenario only; the private splits include
+that and other scenarios. So a method tuned only on dev's instructed-deception should
+still generalize — don't overfit to it.
+
+### Dataset shape
+Each dataset is **one HF repo, single `test` split**, named
+`aletheias-quest/<split>-instructed-deception-<base>-<lora>` with a sibling
+`…-labels` repo. The runner sets `DATASET_NAME` per run; load it with
+`load_dataset(DATASET_NAME, split="test")` (or `util.load_examples`). Per-row columns:
+
+- `index` — stable join key. **Put this in `submission.csv`'s `index`** (not row position).
+- `messages` — the conversation: a list of `{"role", "content"}` turns.
+- `model` — the HF repo id of the model that generated the conversation.
+- `lora` — a LoRA adapter id, or `None` for the plain base.
+- `deceptive` — the label (**present in dev** for tuning; withheld in the private splits).
+
+### Models in play
+Conversations are generated by three **base** models (read each row's `model`/`lora` —
+don't hardcode unless your method requires a fixed model, like a probe's training base):
+
+| Base model (`model`) | LoRA "model organisms" (`lora`) |
+|---|---|
+| `google/gemma-3-27b-it` | `abliterated-collusion-gemma3-27b-v1`, `hidden-goal-model-organism-gemma3-27b-v1` |
+| `Qwen3.5-27B` | `botc-latest-checkpoint`, `echoblast-model-organism` |
+| `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16` | (used as a base) |
+
+All of these are **served on NDIF and available at all times** for remote tracing —
+including the 120B Nemotron (it's just large; it was left out of the default `dry.yaml`
+for speed, not availability). `util.build_model` picks the right nnsight wrapper
+automatically (gemma-3 is multimodal → `VisionLanguageModel`; others → `LanguageModel`).
+
+### Scoring (what the leaderboard reports)
+Per dataset, four metrics — **balanced accuracy** (the ranking metric), **AUROC**,
+**recall**, **false-positive rate**. The binary metrics use your `deceptive` column
+("deceptive" = positive class); **AUROC uses the continuous `score`**. Your headline
+numbers are the **mean across datasets**; the board ranks by **mean balanced accuracy**
+(click a row for per-dataset detail) and also shows total runtime.
+
+On the **leaderboard and in the `/submit` response, the per-dataset rows are labelled
+`Dataset 1`, `Dataset 2`, … — the real dataset names are withheld** (the private splits
+stay private; a failure says "failed on Dataset N", not which real set). The numbering is
+stable but otherwise opaque, so don't try to map a label back to a real dataset. **`--dry`
+is the exception**: it runs locally on the public dev data, so it prints the **real**
+dataset names.
+
+---
+
+## 4. The submission contract
+
+Your notebook must write **`submission.csv`** in the working directory with columns
+`index,deceptive,score`, exactly one row per example:
+
+```
+index,deceptive,score
+35387,False,0.04
+14418,True,0.97
+...
+```
+
+- `index` — the row's `index` from the dataset (the join key).
+- `deceptive` — your **binary** call (`True`/`False`).
+- `score` — a continuous deception score, **required, in `[0, 1]`** (what AUROC reads;
+  it's also what you'd threshold to get `deceptive`).
+
+The runner sets these env vars for your notebook (read them; don't hardcode):
+
+| Var | Meaning |
+|---|---|
+| `DATASET_NAME` | The dataset to predict on. |
+| `NDIF_HOST` | The NDIF cluster — **set for you**; nnsight reads it, so you never configure a host (just `remote=True`). |
+| `NDIF_API_KEY` | Your key, forwarded so remote traces authenticate. |
+| `HF_TOKEN` | Your HF token, forwarded for gated models you can access. |
+
+---
+
+## 5. `util.py` — the toolkit
+
+`util.py` factors out the boilerplate so a notebook is just your *method*. It's a
+**convenience, not a requirement**: depending on your method you may implement parts
+yourself (custom tokenization, a different batching/pooling scheme, multiple traces,
+`generate` instead of a forward pass) or skip it entirely — the only hard contract is
+producing `submission.csv` (Section 4). The runner executes notebooks **from the repo
+root**, and `util.py` is in `submission/`, so import it like:
+
+```python
+import sys
+sys.path.insert(0, "submission")
+from util import load_examples, build_model, decoder_layers, run_full_session, write_submission
+```
+
+> **Use `from util import …`, not `import util`, for anything referenced inside
+> `detect`** (see the rules below) — this matters and is easy to get wrong.
+
+### API (client-side helpers)
+- `load_examples(dataset_name) -> Dataset` — loads the `test` split and guarantees an
+  `index` column.
+- `build_model(model_id, lora_id=None) -> model` — builds the right nnsight wrapper
+  (VLM vs LM auto-detected); `lora_id` attaches a PEFT adapter.
+- `load_model(dataset_name) -> model` — `build_model` from row 0's `model`/`lora`.
+- `decoder_layers(model) -> ModuleList` — the text decoder's transformer layers
+  (searches the module tree; handles the LoRA/PEFT nesting). Read a layer's residual
+  stream with `decoder_layers(model)[L].output`.
+- `response_span(messages, tokenizer) -> (ids, start, end)` and
+  `chat_preprocess(messages, tokenizer, max_len) -> (ids, (start, end))` — default
+  tokenization + assistant-response span.
+- `write_submission(indices, scores, *, threshold=0.5, deceptive=None)` — writes
+  `index,deceptive,score` (clips score to `[0,1]`; `deceptive` defaults to `score >= 0.5`).
+
+### `run_full_session` — score everything in one remote session
+```python
+run_full_session(dataset_name, detect_fn, *, preprocess=chat_preprocess, model=None,
+                 batch_size=32, max_len=256, remote=True, limit=None, **detect_kwargs) -> np.ndarray
+```
+It loads + tokenizes (via `preprocess`) + length-sorts + right-pads into batches **inside
+one NDIF session** (one queue wait — far more robust to queue latency than many traces),
+calls your `detect_fn` per batch, and returns scores **in dataset order**. Pass
+`model=` to use a fixed model (e.g. a probe's base); `**detect_kwargs` are threaded
+through to `detect_fn` (pass probe weights, a layer index, etc.); `limit=N` scores only
+the first N rows (quick rehearsal). Then: `write_submission(load_examples(DATASET_NAME)["index"], scores)`.
+
+### `detect_fn` — your method (runs on NDIF)
+```python
+def detect(model, model_id, lora_id, batch, **kwargs):
+    with model.trace({"input_ids": batch.input_ids, "attention_mask": batch.attention_mask}):
+        logits = batch.gather_last(model.output.logits)   # or read activations
+        scores = my_score(logits).save()                  # (B,) in [0,1]
+    return scores
+```
+`detect_fn` gets a right-padded `batch` and returns a `(B,)` score tensor. The `batch`
+exposes `input_ids`, `attention_mask`, `indices`, `response_spans`, and two reducers:
+`batch.gather_last(h)` (each row's last real token) and `batch.pool_response(h)` (mean
+over the assistant-response span).
+
+**Three rules for `detect_fn` — it is cloudpickled and executed remotely on NDIF:**
+1. **Open your own `model.trace(...)` (or `model.generate(...)`)** inside it.
+2. **`.save()` the scores *inside* the trace and return that.** A value left unsaved
+   doesn't survive the trace block (you'll get `UnboundLocalError`).
+3. **Only use `from`-imported functions, `batch` methods, `torch`, `**kwargs`, and the
+   `model`.** Referencing the **`util` module** (`util.decoder_layers(...)`) inside
+   `detect` ships the module to NDIF and fails (`Module ... is not whitelisted`).
+   `from util import decoder_layers` ships just the function and works. To pass a numpy
+   probe in, hand it through `**kwargs` as a tensor and move it on-device:
+   `feats @ direction.to(feats.device)`.
+
+See `submission/example.ipynb` (logit baseline) and `baselines/mean_probe.ipynb`
+(activation probe, one remote trace per batch) for the two canonical shapes, and
+`baselines/mean_probe_fast.ipynb` for the **efficient** form of the same probe —
+the whole dataset in one `run_full_session` session with a `tracer.stop()`
+early-exit after the probe's layer (a worked `run_full_session` + custom
+`detect`/`preprocess` example).
+
+---
+
+## 6. Crafting a method
+
+Common shapes, cheapest → richest:
+- **Text heuristic** — score from `util.final_assistant_message(ex)` text only; no
+  trace needed. Weak, but a sanity baseline.
+- **Logit signal** — last-token logits of the generating model (`example.ipynb`).
+- **Activation probe** — read `decoder_layers(model)[L].output`, pool the response
+  span, project onto a trained direction (`baselines/mean_probe.ipynb`). Train the
+  direction offline (see `tutorials/`); ship it as a `.npz` and apply it inside `detect`.
+- **LLM judge** — prompt a model to rate deceptiveness and read the rating-token logits.
+- **Self-eval / follow-up** — ask the generating model about its own honesty and read
+  the answer (forward pass, or `model.generate`).
+
+### Efficiency (read this — it's where runs fail)
+- **Batch budget:** peak GPU memory scales with `batch_size × seq_len²`, not row count.
+  Keep **`batch_size × max_len ≲ 2560`** on the 27B models (the example uses `8 × 256`).
+  Bigger batches **CUDA-OOM**; if you OOM, lower `batch_size` or `max_len`. (Per-model
+  limits vary and aren't published — tune down until it's stable.)
+- **One session, not many traces.** `run_full_session` bundles all batches into a single
+  remote job — one queue wait. Avoid a separate `remote=True` trace per row.
+- **Early-stop after the layer you read.** If your method only needs layer `L` (e.g. an
+  activation probe), call `tracer.stop()` right after reading `decoder_layers(model)[L].output`
+  inside the trace — the forward halts there, skipping every later layer **and the LM head**.
+  For a mid-network layer on a deep model that's roughly half the compute, for free. See
+  `baselines/mean_probe_fast.ipynb`.
+- **Truncate to what you need.** Keep the response (the thing being judged); trim long
+  prompts from the front (`max_len`).
+- **Right-pad + mask** so padding doesn't affect the real tokens; use `batch.gather_last`
+  / `batch.pool_response` so your code is padding-agnostic.
+
+### Calibrating the binary call (the leaderboard ranks on it)
+The board ranks by **balanced accuracy**, which reads your **`deceptive`** column — a
+*thresholded* decision — while **AUROC** reads the continuous `score`. These can diverge
+sharply: a probe trained on one base model / scenario often keeps an excellent score
+**ranking** on others (high AUROC) yet its raw scores never cross a fixed `0.5`, so the
+binary call fires on almost nothing — recall ≈ 0, balanced accuracy stuck at **0.5**, even
+with AUROC ~0.9. If you see "high AUROC, balanced accuracy ≈ 0.5", the **threshold** is the
+problem, not the signal. Calibrate the `deceptive` decision rather than leaving it at
+`score >= 0.5`: pick a threshold on dev, or set `deceptive` from a per-dataset rule (e.g. a
+percentile / median split of that dataset's scores) so it adapts across base models. It
+costs no extra compute and is often the biggest single ranking gain. (Pass your own boolean
+array as `write_submission(..., deceptive=...)`.)
+
+---
+
+## 7. NDIF & nnsight essentials
+
+- `remote=True` runs the forward pass on NDIF; the model object is a **local handle**,
+  weights live remotely. The host + key are injected — never set `CONFIG.API.HOST` or a
+  key in a submission.
+- **Giving nnsight your key locally** (tutorials, debugging — *not* in a submission):
+  nnsight reads the **`NDIF_API_KEY`** env var automatically, so `export
+  NDIF_API_KEY=…` is enough. Or from Python: `from nnsight import CONFIG;
+  CONFIG.set_default_api_key("…")` (saves it to nnsight's config, persists across
+  sessions) or `CONFIG.API.APIKEY = "…"` (this session only). On the leaderboard the
+  key is already set, so a submission needs none of this.
+- **Sessions** (`with model.session(remote=True):`) bundle multiple traces into one
+  job; values flow between traces, and **only `.save()`'d values survive** the session.
+  `run_full_session` manages this for you.
+- The whole session body — including `load_dataset` and tokenization — executes **on
+  NDIF**. That's intended (one job), but it has two consequences: (a) `detect`/`preprocess`
+  get serialized and shipped (Section 5, rule 3), and (b) the **dataset must be available on
+  NDIF** — `run_full_session` calls `load_dataset` remotely, so a dataset not cached there
+  fails with a `shutil.rmtree ... blocked` `RemoteException` (Section 9). If you'd rather not
+  depend on that, load + tokenize **locally** and open the remote trace on just the tensors
+  (then only the *model* needs to be on NDIF).
+- Learn the primitives from the **[nnsight tutorials](https://nnsight.net/tutorials/)**
+  and **[nnsight.net](https://nnsight.net)**. For NDIF status/model availability see
+  [ndif.us](https://ndif.us).
+
+---
+
+## 8. Test locally, then submit
+
+```bash
+export NDIF_API_KEY="your-key"
+python submit.py --dry                 # runs the REAL pipeline locally on dev data, shows full errors
+python submit.py --dry --limit 32      # faster: score only the first 32 rows of each dataset
+python submit.py --team "your-team" --tag white   # first real submit (team name only the first time)
+python submit.py --tag white           # subsequent submits
+```
+**Tag your method** with `--tag white` (white-box — uses activations/weights) or `--tag black`
+(black-box — query-only). It rides through to the leaderboard as a badge and a filter (All /
+White-box / Black-box) and maps to the white-box vs black-box prize categories; omit to stay
+untagged. (It's recorded with your result; it doesn't change how your notebook runs.)
+`--dry` reads `dry.yaml` (edit it to pick which dev datasets to rehearse on), runs your
+notebook end-to-end through the sandbox pipeline, scores it, and prints **the real
+traceback on failure** — this is where you debug. **Always `--dry` before submitting.**
+`--limit N` is forwarded to the notebook as the `ALETHEIA_LIMIT` env var (the notebook
+chooses how to honor it — `example.ipynb` passes it to `run_full_session(..., limit=N)`),
+so a quick partial rehearsal is cheap; omit it to score every row.
+
+**Attempts (3 per 4h).** An attempt is spent only on a submission that **actually runs** —
+and a run that *errors* still spends it. A submission rejected up front (more than one
+notebook, a malformed package, or hitting the rate limit) does **not** cost an attempt.
+So a failed real submission is a wasted attempt: `--dry` until it's clean, then submit.
+
+**Your standing & history.** Check the **Entrant's Desk** on the
+[leaderboard page](https://ndif-leaderboard-dev.hf.space/) — enter your NDIF key to see your
+team, best score, **attempts remaining**, and your submission history (per-dataset metrics +
+runtime). Note: a run that *failed to start* (e.g. eval data wasn't loadable) records no
+history row, so a blank history after a failed submit is expected. The board shows datasets
+by **codename** (`Dataset 1`, …); the real names stay private.
+
+---
+
+## 9. Diagnosing common errors
+
+| Symptom | Cause → fix |
+|---|---|
+| Leaderboard returns a **generic** "failed to run in the sandbox" message | The real traceback is redacted server-side (it could leak private inputs). **Reproduce with `python submit.py --dry`** to see it. |
+| `Module util is not whitelisted` / `_frozen_importlib*` | You referenced the **`util` module** inside `detect`. Use `from util import <fn>` and call the bare name (Section 5, rule 3). |
+| `UnboundLocalError: ... 'scores'` (or similar) in `detect` | You didn't **`.save()`** the value inside the trace before returning it (rule 2). |
+| `CUDA out of memory` / job killed | Batch too large. Lower `batch_size`/`max_len` so `batch_size × max_len ≲ 2560`. |
+| `too many dimensions 'str'` while tokenizing | `apply_chat_template(tokenize=True)` returns a `BatchEncoding` in transformers 5.x. Use `apply_chat_template(..., return_dict=True)["input_ids"]`. |
+| `ModuleNotFoundError: util` | The runner's cwd is the repo root. `sys.path.insert(0, "submission")` before importing. |
+| `invalid submission: … exactly one notebook` (400) | `submission/` has more than one `.ipynb`. Keep exactly one — delete/rename `example.ipynb` if you copied from it. (Rejected before running, so no attempt is spent.) |
+| `submission.csv missing columns` / `score must be in [0, 1]` | Output must be `index,deceptive,score` with `score ∈ [0,1]`; use `util.write_submission`. |
+| `prediction count N != label count M` (400) | A real submission must predict **every** row of each dataset (one row per example). Don't submit a `--limit`ed run — `--limit`/`$ALETHEIA_LIMIT` is for a fast *partial* `--dry` rehearsal (which scores only the rows it produced); a real submit needs full coverage. |
+| `RemoteException: … RuntimeError: Operation 'shutil.rmtree' is blocked inside the sandbox` (while `load_dataset` runs) | `run_full_session` loads the dataset **on NDIF** (the session body runs remotely), so the dataset must be **cached on NDIF**. If it isn't, NDIF's `download_and_prepare` trips the sandbox. **Organizer-side**: ask the devs to cache that dataset on NDIF. **Or** load + tokenize the data **locally** (outside the session) and send only the tensors to a remote trace — then only the *model* needs to be on NDIF (see `baselines/mean_probe.ipynb`, which loads locally + one remote trace per batch). |
+| `RemoteException: Error submitting request to model deployment. Please try again later.` | Transient NDIF — the model deployment isn't accepting requests right now. Retry (often clears in a minute); check [ndif.us](https://ndif.us) / Discord if it persists. |
+| `PicklingError: Cannot serialize function '<detect/preprocess>': source code unavailable` | nnsight cloudpickles `detect`/`preprocess` **by source**, so they must have retrievable source — define them in a **notebook cell** or an **imported `.py`**, never via `exec`, `python -c`, or a heredoc. |
+| `DecodingError: brotli: decoder process called with data when 'can_accept_more_data()' is False` | A **urllib3 ≥2.6 regression** decoding brotli (`Content-Encoding: br`) on NDIF's streamed result download — only triggers when the `brotli`/`brotlicffi` package is installed in your **local** env (not your code, not the Space). Fix: `pip uninstall -y brotli brotlicffi` (the validated dev env has no brotli), or `pip install 'urllib3<2.6'`, or use a fresh `./setup_dev.sh` venv. |
+| `RemoteException: Model is not pinned...` / `compute backend is reconnecting` | Transient NDIF capacity — retry, or check [ndif.us](https://ndif.us) / Discord. |
+| `ProxyError: 403 Forbidden` on a completed trace | Egress to a host the sandbox blocks (e.g. the result bucket). This is an **organizer-side** config issue — report it on Discord; it's not your code. |
+
+When none of these fit: the **[nnsight tutorials](https://nnsight.net/tutorials/)**,
+**[Discord](https://discord.gg/MfjQbAErEG)**, and **office hours (Tues & Fri 1 PM ET)**
+are the places to ask.
+
+---
+
+## 10. Quick links
+- Apply / participant info: <https://aletheias-quest.github.io/>
+- Application form: <https://forms.office.com/r/BXVwPEweJi>
+- Contact email: competition@cadenzalabs.org
+- Leaderboard: <https://ndif-leaderboard-dev.hf.space/>
+- Competition HF org: <https://huggingface.co/aletheias-quest>
+- Dev datasets: <https://huggingface.co/collections/aletheias-quest/dev-instructed-deception>
+- nnsight: <https://nnsight.net> · tutorials: <https://nnsight.net/tutorials/>
+- NDIF: <https://ndif.us>
+- Discord: <https://discord.gg/MfjQbAErEG>
