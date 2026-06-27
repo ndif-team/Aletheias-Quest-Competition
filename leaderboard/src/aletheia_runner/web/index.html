@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Aletheia's Quest — The Ledger</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400;1,500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --paper:   #f2eee4;
+      --paper-2: #ece6d8;
+      --ink:     #1a1813;
+      --muted:   #847d6d;
+      --faint:   #a99f88;
+      --rule:    #d6cdb8;
+      --rule-bold:#1a1813;
+      --accent:  #7c1f1f;            /* oxblood */
+      --serif:   "Times New Roman", Times, serif;
+      --display: "Cormorant Garamond", "Times New Roman", serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; }
+    body {
+      background: var(--paper);
+      color: var(--ink);
+      font-family: var(--serif);
+      font-size: 18px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+    /* warm vignette + paper grain */
+    body::before {
+      content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none;
+      background:
+        radial-gradient(120% 80% at 50% -10%, #fbf8f1 0%, rgba(251,248,241,0) 55%),
+        radial-gradient(140% 120% at 50% 120%, rgba(60,48,28,0.10) 0%, rgba(60,48,28,0) 50%);
+    }
+    body::after {
+      content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none;
+      opacity: 0.05; mix-blend-mode: multiply;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    }
+    .sheet {
+      position: relative; z-index: 1;
+      max-width: 880px; margin: 0 auto; padding: 7vh 28px 14vh;
+    }
+
+    /* ── Masthead ─────────────────────────────────────────────── */
+    header { text-align: center; }
+    .topnav {
+      font-size: 11.5px; letter-spacing: 0.28em; text-transform: uppercase;
+      color: var(--muted); margin-bottom: 30px;
+      animation: rise 0.8s both ease-out;
+    }
+    .topnav a { color: var(--muted); }
+    .topnav a:hover { color: var(--accent); }
+    .topnav .sep { color: var(--faint); margin: 0 0.9em; }
+    .kicker {
+      font-size: 12px; letter-spacing: 0.42em; text-transform: uppercase;
+      color: var(--muted); margin-bottom: 22px; padding-left: 0.42em;
+      animation: rise 0.9s 0.05s both ease-out;
+    }
+    h1 {
+      font-family: var(--display); font-weight: 500; font-style: normal;
+      font-size: clamp(3rem, 11vw, 6.5rem); line-height: 0.92;
+      letter-spacing: -0.015em; margin: 0;
+      animation: rise 1s 0.12s both cubic-bezier(.2,.7,.2,1);
+    }
+    h1 em { font-style: italic; font-weight: 400; }
+    .rules { margin: 30px auto 16px; max-width: 640px; }
+    .rules .bold { height: 2px; background: var(--rule-bold);
+      transform-origin: center; animation: draw 1.1s 0.5s both cubic-bezier(.2,.7,.2,1); }
+    .rules .thin { height: 1px; background: var(--rule-bold); margin-top: 3px;
+      transform-origin: center; animation: draw 1.1s 0.62s both cubic-bezier(.2,.7,.2,1); }
+    .dek {
+      font-family: var(--display); font-style: italic; font-size: 1.45rem;
+      color: var(--ink); animation: rise 0.9s 0.35s both ease-out;
+    }
+    .meta {
+      text-align: center; font-size: 12.5px; letter-spacing: 0.16em;
+      text-transform: uppercase; color: var(--muted); margin: 12px 0 56px;
+      animation: rise 0.9s 0.45s both ease-out;
+    }
+
+    /* ── Ledger ───────────────────────────────────────────────── */
+    table.ledger { width: 100%; border-collapse: collapse; }
+    .ledger thead th {
+      font-family: var(--serif); font-weight: 400; font-size: 11.5px;
+      letter-spacing: 0.2em; text-transform: uppercase; color: var(--muted);
+      text-align: left; padding: 0 14px 12px; border-bottom: 1.5px solid var(--rule-bold);
+      animation: rise 0.8s 0.5s both ease-out;
+    }
+    .ledger th.c-rank { width: 64px; }
+    .ledger th.c-score, .ledger td.c-score { text-align: right; }
+    .ledger tbody td {
+      padding: 17px 14px; border-bottom: 1px solid var(--rule);
+      vertical-align: baseline;
+    }
+    .ledger tbody tr { animation: rowin 0.7s both cubic-bezier(.2,.7,.2,1); }
+    .ledger tbody tr:hover td { background: var(--paper-2); }
+
+    .num {
+      font-family: var(--display); font-weight: 400;
+      font-size: 2rem; line-height: 1; color: var(--faint);
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    .team {
+      font-family: var(--display); font-size: 1.6rem; font-weight: 500;
+      letter-spacing: 0.005em;
+    }
+    .sub { font-style: italic; color: #34301f; }
+    .when { color: var(--muted); font-size: 0.95rem;
+      font-variant-numeric: lining-nums tabular-nums; white-space: nowrap; }
+    .score {
+      font-family: var(--display); font-weight: 500; font-size: 1.95rem;
+      line-height: 1; font-variant-numeric: lining-nums tabular-nums;
+    }
+
+    /* Leader */
+    tr.leader td { border-bottom-color: var(--rule-bold); }
+    tr.leader .num { color: var(--accent); font-weight: 500; }
+    tr.leader .num::before { content: "✦ "; font-size: 0.7em; vertical-align: 0.18em; }
+    tr.leader .score { color: var(--accent); }
+    tr.leader .team { font-style: italic; }
+
+    .state { padding: 64px 6px; font-family: var(--display); font-style: italic;
+      font-size: 1.5rem; color: var(--muted); text-align: center; }
+    .state.error { color: var(--accent); }
+
+    /* ── Footer ───────────────────────────────────────────────── */
+    footer { margin-top: 64px; text-align: center; color: var(--muted);
+      animation: rise 0.9s 0.8s both ease-out; }
+    .epigraph { font-family: var(--display); font-size: 1.5rem; color: var(--ink); }
+    .epigraph .greek { font-style: normal; letter-spacing: 0.04em; }
+    .epigraph em { font-style: italic; }
+    .colophon { margin-top: 18px; font-size: 13px; letter-spacing: 0.04em; }
+    .colophon code { font-family: var(--serif); font-style: italic; color: var(--ink);
+      border-bottom: 1px solid var(--rule-bold); padding-bottom: 1px; }
+
+    /* ── Entrant's desk (personal lookup) ─────────────────────── */
+    .desk { margin-top: 72px; padding-top: 34px; border-top: 1.5px solid var(--rule-bold);
+      animation: rise 0.9s 0.7s both ease-out; }
+    .desk h2 { font-family: var(--display); font-weight: 500; font-size: 2.1rem;
+      letter-spacing: -0.01em; margin: 0 0 2px; text-align: center; }
+    .desk .desk-sub { text-align: center; font-family: var(--display); font-style: italic;
+      color: var(--muted); font-size: 1.1rem; margin-bottom: 22px; }
+    .desk-form { display: flex; gap: 10px; max-width: 520px; margin: 0 auto 8px; }
+    .desk-form input { flex: 1; font-family: var(--serif); font-size: 15px;
+      padding: 11px 14px; background: var(--paper-2); color: var(--ink);
+      border: 1px solid var(--rule); border-radius: 2px; letter-spacing: 0.02em; }
+    .desk-form input:focus { outline: none; border-color: var(--accent); }
+    .desk-form button { font-family: var(--serif); font-size: 12px; letter-spacing: 0.18em;
+      text-transform: uppercase; padding: 0 22px; cursor: pointer; color: var(--paper);
+      background: var(--accent); border: none; border-radius: 2px; }
+    .desk-form button:hover { background: #5e1414; }
+    .desk-note { text-align: center; font-size: 11px; letter-spacing: 0.06em;
+      color: var(--faint); }
+    .me { max-width: 760px; margin: 26px auto 0; }
+    .me-head { display: flex; flex-wrap: wrap; align-items: baseline;
+      justify-content: space-between; gap: 10px;
+      border-bottom: 1.5px solid var(--rule-bold); padding-bottom: 12px; margin-bottom: 12px; }
+    .me-team { font-family: var(--display); font-size: 1.8rem; font-weight: 500; }
+    .me-team .pending { font-family: var(--serif); font-size: 10.5px; letter-spacing: 0.16em;
+      text-transform: uppercase; color: var(--accent); margin-left: 12px; vertical-align: middle; }
+    .me-rl { font-size: 12.5px; letter-spacing: 0.03em; color: var(--muted); }
+    .me-rl b { color: var(--ink); font-weight: 500; }
+    table.me-subs { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+    .me-subs th { font-family: var(--serif); font-weight: 400; font-size: 10.5px;
+      letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted);
+      text-align: left; padding: 0 10px 8px; }
+    .me-subs td { padding: 9px 10px; border-top: 1px solid var(--rule); vertical-align: baseline; }
+    .me-subs .s-res { text-align: right; }
+    .me-subs .s-score { font-family: var(--display); font-weight: 500;
+      font-variant-numeric: lining-nums tabular-nums; }
+    .me-subs .fail { color: var(--accent); font-style: italic; }
+    .me-empty, .me-error { text-align: center; font-family: var(--display); font-style: italic;
+      color: var(--muted); padding: 20px; }
+    .me-empty code { font-style: normal; font-family: var(--serif); color: var(--ink); }
+    .me-error { color: var(--accent); }
+
+    a { color: var(--accent); text-decoration: none; }
+
+    @keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+    @keyframes draw { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+    @keyframes rowin { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+
+    @media (max-width: 620px) {
+      body { font-size: 16px; }
+      .sheet { padding: 5vh 18px 10vh; }
+      .ledger .c-when { display: none; }
+      .team { font-size: 1.35rem; } .score { font-size: 1.6rem; } .num { font-size: 1.6rem; }
+      .me-head { gap: 4px; } .me-team { font-size: 1.5rem; }
+    }
+  </style>
+</head>
+<body>
+  <div class="sheet">
+    <header>
+      <nav class="topnav">
+        <a href="https://aletheias-quest.github.io/" target="_blank" rel="noopener">Website</a>
+        <span class="sep">&middot;</span>
+        <a href="https://github.com/ndif-team/Aletheias-Quest-Competition" target="_blank" rel="noopener">GitHub</a>
+      </nav>
+      <div class="kicker">National Deep Inference Fabric · MMXXVI</div>
+      <h1>Aletheia&rsquo;s <em>Quest</em></h1>
+      <div class="rules"><div class="bold"></div><div class="thin"></div></div>
+      <div class="dek">A standing ledger of deception detection</div>
+      <div class="meta" id="meta">consulting the ledger&hellip;</div>
+    </header>
+
+    <main id="board">
+      <div class="state">Consulting the ledger&hellip;</div>
+    </main>
+
+    <section class="desk">
+      <h2>Entrant&rsquo;s Desk</h2>
+      <div class="desk-sub">Your team, attempts remaining, and record</div>
+      <form class="desk-form" id="meForm" autocomplete="off">
+        <input id="meKey" type="password" placeholder="Your NDIF API key"
+               autocomplete="off" spellcheck="false" aria-label="NDIF API key" />
+        <button type="submit">Review</button>
+      </form>
+      <div class="desk-note">Sent over HTTPS only to look you up &mdash; never stored.</div>
+      <div class="me" id="me"></div>
+    </section>
+
+    <footer>
+      <div class="epigraph"><span class="greek">&#7936;&#955;&#942;&#952;&#949;&#953;&#945;</span> &mdash;
+        <em>disclosure; the state of not being hidden.</em></div>
+      <div class="colophon">Enter the lists &mdash; <code>python submit.py --team "&hellip;"</code></div>
+    </footer>
+  </div>
+
+  <script>
+    let firstRender = true;
+
+    function fmt(x) { return (x === null || x === undefined) ? "—" : Number(x).toFixed(4); }
+    function nbName(p) { return String(p || "").split("/").pop(); }
+    function fmtTime(iso) {
+      if (!iso) return "—";
+      const d = new Date(iso);
+      if (isNaN(d)) return iso;
+      const date = d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+      const time = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+      return date + " · " + time;
+    }
+    function esc(s) {
+      return String(s).replace(/[&<>"']/g, c => (
+        { "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+    }
+
+    async function load() {
+      const board = document.getElementById("board");
+      const meta = document.getElementById("meta");
+      try {
+        const res = await fetch("/api/leaderboard");
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+        const rows = data.results || [];
+        const metric = (data.metric || "auroc").toUpperCase();
+        const now = new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+        meta.textContent = `Metric · ${metric}     /     ${rows.length} entr${rows.length === 1 ? "y" : "ies"}     /     revised ${now}`;
+
+        if (!rows.length) {
+          board.innerHTML = '<div class="state">The ledger stands empty. Be the first to be recorded.</div>';
+          return;
+        }
+
+        const body = rows.map((r, i) => {
+          const delay = firstRender ? (0.55 + i * 0.05).toFixed(2) + "s" : "0s";
+          return `
+            <tr class="${i === 0 ? "leader" : ""}" style="animation-delay:${delay}">
+              <td class="c-rank"><span class="num">${i + 1}</span></td>
+              <td class="c-team"><span class="team">${esc(r.team)}</span></td>
+              <td class="c-sub"><span class="sub">${esc(nbName(r.notebook))}</span></td>
+              <td class="c-when"><span class="when">${esc(fmtTime(r.submitted_at))}</span></td>
+              <td class="c-score"><span class="score">${fmt(r.score)}</span></td>
+            </tr>`;
+        }).join("");
+
+        board.innerHTML = `<table class="ledger">
+          <thead><tr>
+            <th class="c-rank">N&deg;</th>
+            <th class="c-team">Entrant</th>
+            <th class="c-sub">Submission</th>
+            <th class="c-when">Recorded</th>
+            <th class="c-score">${esc(metric)}</th>
+          </tr></thead>
+          <tbody>${body}</tbody></table>`;
+        firstRender = false;
+      } catch (e) {
+        board.innerHTML = `<div class="state error">The ledger could not be read &mdash; ${esc(String(e))}</div>`;
+        meta.textContent = "";
+      }
+    }
+
+    load();
+    setInterval(load, 30000);
+
+    // ── Entrant's desk: look up your own standing by NDIF key ──
+    let meKey = null;
+
+    function fmtResetIn(epochSec) {
+      if (!epochSec) return null;
+      const ms = epochSec * 1000 - Date.now();
+      if (ms <= 0) return "now";
+      const h = Math.floor(ms / 3.6e6), m = Math.floor((ms % 3.6e6) / 6e4);
+      return (h ? h + "h " : "") + m + "m";
+    }
+
+    function renderMe(d) {
+      const me = document.getElementById("me");
+      if (!d.registered) {
+        me.innerHTML = '<div class="me-empty">No team is registered to this key yet &mdash; '
+          + 'submit once with <code>--team</code> to claim a name.</div>';
+        return;
+      }
+      const rl = d.rate_limit || {};
+      let rlText;
+      if (!rl.enabled) {
+        rlText = "No submission limit";
+      } else {
+        const resetIn = (rl.used > 0) ? fmtResetIn(rl.resets_at) : null;
+        rlText = `<b>${rl.remaining}</b> of ${rl.max} attempt${rl.max === 1 ? "" : "s"} left`
+          + (rl.window_hours ? ` &middot; ${rl.window_hours}h window` : "")
+          + (resetIn ? ` &middot; resets in ${esc(resetIn)}` : "");
+      }
+      const pending = d.pending > 0
+        ? `<span class="pending">${d.pending} running</span>` : "";
+      const rows = (d.submissions || []).map(s => {
+        const res = s.ok
+          ? `<span class="s-score">${fmt(s.score)}</span>`
+          : '<span class="fail">failed</span>';
+        return `<tr>
+          <td>${esc(s.notebook)}</td>
+          <td class="when">${esc(fmtTime(s.submitted_at))}</td>
+          <td class="s-res">${res}</td></tr>`;
+      }).join("");
+      const body = rows
+        ? `<table class="me-subs"><thead><tr>
+             <th>Submission</th><th>When</th>
+             <th class="s-res">Result</th></tr></thead><tbody>${rows}</tbody></table>`
+        : '<div class="me-empty">No submissions yet.</div>';
+      me.innerHTML = `<div class="me-head">
+          <div class="me-team">${esc(d.team)}${pending}</div>
+          <div class="me-rl">${rlText}</div>
+        </div>${body}`;
+    }
+
+    async function loadMe() {
+      if (!meKey) return;
+      const me = document.getElementById("me");
+      try {
+        const res = await fetch("/api/me", {
+          method: "POST", headers: { "X-NDIF-API-Key": meKey } });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        renderMe(await res.json());
+      } catch (e) {
+        me.innerHTML = `<div class="me-error">Could not load your standing &mdash; ${esc(String(e))}</div>`;
+      }
+    }
+
+    document.getElementById("meForm").addEventListener("submit", (e) => {
+      e.preventDefault();
+      meKey = document.getElementById("meKey").value.trim();
+      if (meKey) loadMe();
+    });
+    setInterval(loadMe, 15000);   // refresh pending / rate-limit while a key is loaded
+  </script>
+</body>
+</html>
