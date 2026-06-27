@@ -1,0 +1,35 @@
+# Local DEVELOPMENT + `python submit.py --dry` environment.
+#
+# This is NOT your submission's dependency list — that's `submission/requirements.txt`
+# (installed by the runner in a per-job venv). This file recreates, on your own
+# machine, the environment needed to (a) develop/debug your method against the
+# public dev data and (b) run `python submit.py --dry`, which executes the real
+# leaderboard pipeline locally. It mirrors the leaderboard's base image so a `--dry`
+# rehearsal behaves like the Space.
+#
+# Requires Python >= 3.10 (the runner targets 3.12). Install with:
+#     ./setup_dev.sh                     # creates .venv and installs this file
+#   or, into an existing env:
+#     pip install -r requirements-dev.txt
+#
+# The competition's nnsight is the hackathon/peft branch — it targets the
+# hackathon NDIF cluster and may change before the start (see the README).
+nnsight @ git+https://github.com/ndif-team/nnsight.git@hackathon/peft
+
+# Model + data stack (the leaderboard base image ships torch CPU; install a CUDA
+# build yourself if you want to develop on a local GPU).
+torch
+transformers
+datasets
+huggingface_hub
+
+# Scoring + notebook execution (what `submit.py --dry` / the runner need).
+numpy
+pandas
+scikit-learn
+nbclient
+ipykernel
+pyyaml
+
+# submit.py itself.
+requests
