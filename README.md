@@ -20,7 +20,7 @@ You build your detector with [nnsight](https://nnsight.net) and run model traces
 
 > 💬 **Questions?** Join the **[Discord](https://discord.gg/MfjQbAErEG)** — ask the devs and other competitors anything about nnsight, NDIF, the data, or your method. You can also email **competition@cadenzalabs.org**.
 
-> 📅 **Office hours** — bring questions about NNsight, NDIF, or your submission to us on **Tuesdays & Fridays at 1 PM EDT** on Zoom:
+> 📅 **Office hours** — bring questions about NNsight, NDIF, or your submission to us on **Tuesdays & Thursdays at 1 PM EDT** on Zoom:
 > **[northeastern.zoom.us/my/jadenfk](https://northeastern.zoom.us/my/jadenfk)**.
 
 > 🤖 **Compete with an AI agent.** This repo ships an [`llms.txt`](llms.txt) that teaches a coding agent the data, the `util.py` toolkit, NDIF/nnsight, and how to craft, debug, and submit a method. It's also indexed on **[Context7](https://context7.com/ndif-team/aletheias-quest-competition)**, so an agent can pull up-to-date docs on demand. Open the repo in an agent and just ask. See **[Build with an agent](#build-with-an-agent)**.
