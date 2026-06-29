@@ -25,7 +25,7 @@ private data and scores it.
 **[aletheias-quest.github.io](https://aletheias-quest.github.io/)**; the organizers
 issue you an **NDIF API key** for the competition cluster (this key authenticates
 your remote traces — it's also your leaderboard identity). Standings live at the
-**[leaderboard](https://ndif-leaderboard-dev.hf.space/)**.
+**[leaderboard](https://ndif-aletheias-leaderboard.hf.space/)**.
 
 The competition HF org (datasets live here): **<https://huggingface.co/aletheias-quest>**.
 
@@ -351,7 +351,7 @@ notebook, a malformed package, or hitting the rate limit) does **not** cost an a
 So a failed real submission is a wasted attempt: `--dry` until it's clean, then submit.
 
 **Your standing & history.** Check the **Entrant's Desk** on the
-[leaderboard page](https://ndif-leaderboard-dev.hf.space/) — enter your NDIF key to see your
+[leaderboard page](https://ndif-aletheias-leaderboard.hf.space/) — enter your NDIF key to see your
 team, best score, **attempts remaining**, and your submission history (per-dataset metrics +
 runtime). Note: a run that *failed to start* (e.g. eval data wasn't loadable) records no
 history row, so a blank history after a failed submit is expected. The board shows datasets
@@ -389,7 +389,7 @@ are the places to ask.
 - Apply / participant info: <https://aletheias-quest.github.io/>
 - Application form: <https://forms.office.com/r/BXVwPEweJi>
 - Contact email: competition@cadenzalabs.org
-- Leaderboard: <https://ndif-leaderboard-dev.hf.space/>
+- Leaderboard: <https://ndif-aletheias-leaderboard.hf.space/>
 - Competition HF org: <https://huggingface.co/aletheias-quest>
 - Dev datasets: <https://huggingface.co/collections/aletheias-quest/dev-instructed-deception>
 - nnsight: <https://nnsight.net> · tutorials: <https://nnsight.net/tutorials/>

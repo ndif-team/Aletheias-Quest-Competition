@@ -6,7 +6,7 @@
 
 [![Competition Website](https://img.shields.io/badge/Competition%20Website-aletheias--quest.github.io-6f42c1?style=for-the-badge)](https://aletheias-quest.github.io/)
 &nbsp;
-[![Live leaderboard](https://img.shields.io/badge/Live%20leaderboard-ndif--leaderboard--dev-2ea44f?style=for-the-badge)](https://ndif-leaderboard-dev.hf.space/)
+[![Live leaderboard](https://img.shields.io/badge/Live%20leaderboard-ndif--aletheias--leaderboard-2ea44f?style=for-the-badge)](https://ndif-aletheias-leaderboard.hf.space/)
 &nbsp;
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/MfjQbAErEG)
 &nbsp;
@@ -16,7 +16,7 @@ Build a **deception detector**: for each model conversation in a private eval
 set, output the probability that the assistant's final message is *deceptive*.
 You build your detector with [nnsight](https://nnsight.net) and run model traces remotely on [NDIF](https://ndif.us).
 
-> **Submissions.** After you submit your lie detection notebooks, watch your team's standing on the **[live leaderboard](https://ndif-leaderboard-dev.hf.space/)**.
+> **Submissions.** After you submit your lie detection notebooks, watch your team's standing on the **[live leaderboard](https://ndif-aletheias-leaderboard.hf.space/)**.
 
 > 💬 **Questions?** Join the **[Discord](https://discord.gg/MfjQbAErEG)** — ask the devs and other competitors anything about nnsight, NDIF, the data, or your method. You can also email **competition@cadenzalabs.org**.
 
@@ -95,13 +95,13 @@ CONFIG.set_default_api_key("your-ndif-key")   # saves it to nnsight's config (pe
 # or, just for this session:  CONFIG.API.APIKEY = "your-ndif-key"
 ```
 
-**Submission limit & standing.** There is a per-team **submission rate limit** of one submission per 8 hours (**subject to change**; over it you get a clear "try again in …" message). Runs that *error* still spend the rate limit, so make sure to run `--dry` until it's clean. Submissions rejected up front (e.g. a malformed package, or due to rate-limiting) cost nothing. Check the **Entrant's Desk** on the [leaderboard page](https://ndif-leaderboard-dev.hf.space/) (enter your NDIF key) to see your team, best score, **attempts remaining**, and your submission history.
+**Submission limit & standing.** There is a per-team **submission rate limit** of one submission per 8 hours (**subject to change**; over it you get a clear "try again in …" message). Runs that *error* still spend the rate limit, so make sure to run `--dry` until it's clean. Submissions rejected up front (e.g. a malformed package, or due to rate-limiting) cost nothing. Check the **Entrant's Desk** on the [leaderboard page](https://ndif-aletheias-leaderboard.hf.space/) (enter your NDIF key) to see your team, best score, **attempts remaining**, and your submission history.
 
 ## Build with an agent
 
 This repo is set up to be driven by a coding agent (e.g., [Claude Code](https://claude.com/claude-code)). The bundled [`llms.txt`](llms.txt) is a full briefing on the competition — the datasets and models, the `submission/util.py` toolkit, how NDIF/nnsight work, the submission contract, and a table of the errors people actually hit — so the agent can help you go from the example to a real method.
 
-The repo is also indexed on **[Context7](https://context7.com/ndif-team/aletheias-quest-competition).** An agent with Context7 (e.g. via its MCP server) can pull up-to-date, indexed docs and code snippets from this repo and `nnsight` on demand, instead of relying on stale training data. The **[leaderboard page](https://ndif-leaderboard-dev.hf.space/)** also embeds a Context7 chat you can ask directly.
+The repo is also indexed on **[Context7](https://context7.com/ndif-team/aletheias-quest-competition).** An agent with Context7 (e.g. via its MCP server) can pull up-to-date, indexed docs and code snippets from this repo and `nnsight` on demand, instead of relying on stale training data. The **[leaderboard page](https://ndif-aletheias-leaderboard.hf.space/)** also embeds a Context7 chat you can ask directly.
 
 **To point an agent at the competition:**
 
