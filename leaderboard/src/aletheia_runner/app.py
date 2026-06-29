@@ -26,7 +26,7 @@ from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse
 
-from . import pipeline
+from . import ndif, pipeline
 from .archive import SubmissionArchive
 from .config import PRIMARY_METRIC, SECONDARY_METRIC, RunnerConfig, dataset_label
 from .ratelimit import RateLimiter
@@ -240,6 +240,28 @@ def create_app(config: RunnerConfig, store: BaseResultStore,
         if not ndif_api_key:
             raise HTTPException(400, "an NDIF API key is required (X-NDIF-API-Key)")
 
+        # Validate the key against NDIF and decide which key drives the run, before
+        # binding a team or charging a rate-limit attempt. whoami returns the
+        # account (or null email for a key NDIF doesn't recognise), or None when
+        # NDIF is unreachable. Only keys with the usable tier can actually run
+        # traces, so:
+        #   - recognised + tier_1   -> the submitter's OWN key
+        #   - recognised, no tier_1 -> the shared leaderboard key (HF secret)
+        #   - NOT recognised        -> reject immediately (definitive: null email)
+        #   - unknown (NDIF down)   -> shared leaderboard key, so a blip doesn't
+        #                              block valid users (fail-open on transient)
+        info = await run_in_threadpool(ndif.whoami, ndif_api_key, config.ndif_host)
+        if info is not None and not ndif.is_recognized(info):
+            raise HTTPException(400, "NDIF does not recognize this API key")
+        if ndif.has_usable_tier(info):
+            run_ndif_key = ndif_api_key
+        elif config.leaderboard_ndif_api_key:
+            run_ndif_key = config.leaderboard_ndif_api_key
+        else:
+            # No shared key configured: keep the submitter's key (their run will
+            # fail at the first trace if they lack the tier, but we don't block).
+            run_ndif_key = ndif_api_key
+
         limit = MAX_UPLOAD_MB * 1_000_000
         # Reject by declared size before doing anything else (and before pulling the
         # body into memory); re-check the actual bytes after (size may be unset).
@@ -311,11 +333,12 @@ def create_app(config: RunnerConfig, store: BaseResultStore,
                         archive.save_csv(_team, _when, notebook, dataset_key, csv_bytes)
 
                 # The submitter's keys are injected into their sandboxed run:
-                # NDIF_API_KEY for nnsight remote traces (required, so always present
-                # here), HF_TOKEN for loading gated HF models they have access to. (The
+                # NDIF_API_KEY for nnsight remote traces (run_ndif_key was chosen by
+                # tier up front: their own key if tier_1, else the shared leaderboard
+                # key), HF_TOKEN for loading gated HF models they have access to. (The
                 # token can't reach the private eval/labels — that's the organizers'
                 # org, not the participant's.)
-                extra_env = {"NDIF_API_KEY": ndif_api_key}
+                extra_env = {"NDIF_API_KEY": run_ndif_key}
                 if hf_token:
                     extra_env["HF_TOKEN"] = hf_token
                 # Optional row cap, forwarded as ALETHEIA_LIMIT for the notebook to

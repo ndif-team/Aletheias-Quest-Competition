@@ -6,7 +6,7 @@
 
 [![Apply to compete](https://img.shields.io/badge/Apply%20to%20compete-aletheias--quest.github.io-6f42c1?style=for-the-badge)](https://aletheias-quest.github.io/)
 &nbsp;
-[![Live leaderboard](https://img.shields.io/badge/Live%20leaderboard-ndif--leaderboard--dev-2ea44f?style=for-the-badge)](https://ndif-leaderboard-dev.hf.space/)
+[![Live leaderboard](https://img.shields.io/badge/Live%20leaderboard-ndif--aletheias--leaderboard-2ea44f?style=for-the-badge)](https://ndif-aletheias-leaderboard.hf.space/)
 &nbsp;
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/MfjQbAErEG)
 &nbsp;
@@ -17,17 +17,12 @@ set, output the probability that the assistant's final message is _deceptive_.
 You build your detector with [nnsight](https://nnsight.net) and run model traces
 remotely on [NDIF](https://ndif.us).
 
-> **You must be an official participant to compete.** Apply at
-> **[aletheias-quest.github.io](https://aletheias-quest.github.io/)** — the
-> organizers will issue you an **NDIF API key** for the competition cluster (it's
-> what authenticates your remote traces). Watch your standing on the
-> **[live leaderboard](https://ndif-leaderboard-dev.hf.space/)**.
+> **Submissions.** After you submit your lie detection notebooks, watch your team's standing on the **[live leaderboard](https://ndif-aletheias-leaderboard.hf.space/)**.
 
 > 💬 **Questions?** Join the **[Discord](https://discord.gg/MfjQbAErEG)** — ask the
 > devs and other competitors anything about nnsight, NDIF, the data, or your method.
 
-> 📅 **Office hours** — bring questions about nnsight, NDIF, or your submission to us
-> on **Tuesdays & Fridays at 1 PM ET** on Zoom:
+> 📅 **Office hours** — bring questions about NNsight, NDIF, or your submission to us on **Tuesdays & Thursdays at 1 PM EDT** on Zoom:
 > **[northeastern.zoom.us/my/jadenfk](https://northeastern.zoom.us/my/jadenfk)**.
 
 > 🤖 **Compete with an AI agent.** This repo ships an [`llms.txt`](llms.txt) that
@@ -152,14 +147,7 @@ CONFIG.set_default_api_key("your-ndif-key")   # saves it to nnsight's config (pe
 # or, just for this session:  CONFIG.API.APIKEY = "your-ndif-key"
 ```
 
-**Submission limit & your standing.** There is a per-team **submission rate limit**
-(the exact budget is **subject to change**; over it you get a clear "try again in …"
-message). An attempt is spent only on a submission that **actually runs** — and a run
-that _errors_ still spends it, so `--dry` until it's clean; a submission rejected up
-front (e.g. a malformed package, or being rate-limited) costs nothing. Check the
-**Entrant's Desk** on the [leaderboard page](https://ndif-leaderboard-dev.hf.space/)
-(enter your NDIF key) to see your team, best score, **attempts remaining**, and your
-submission history.
+**Submission limit & standing.** There is a per-team **submission rate limit** of one submission per 12 hours (**subject to change**; over it you get a clear "try again in …" message). Runs that *error* still spend the rate limit, so make sure to run `--dry` until it's clean. Submissions rejected up front (e.g. a malformed package, or due to rate-limiting) cost nothing. Check the **Entrant's Desk** on the [leaderboard page](https://ndif-aletheias-leaderboard.hf.space/) (enter your NDIF key) to see your team, best score, **attempts remaining**, and your submission history.
 
 ## Build with an agent
 
@@ -170,12 +158,7 @@ models, the `submission/util.py` toolkit, how NDIF/nnsight work, the submission
 contract, and a table of the errors people actually hit — so the agent can help you
 go from the example to a real method.
 
-The repo is also indexed on
-**[Context7](https://context7.com/ndif-team/aletheias-quest-competition)** — an agent
-with Context7 (e.g. via its MCP server) can pull up-to-date, indexed docs and code
-snippets for this repo and `nnsight` on demand, instead of relying on stale training
-data. The **[leaderboard page](https://ndif-leaderboard-dev.hf.space/)** also embeds a
-Context7 chat you can ask directly.
+The repo is also indexed on **[Context7](https://context7.com/ndif-team/aletheias-quest-competition).** An agent with Context7 (e.g. via its MCP server) can pull up-to-date, indexed docs and code snippets from this repo and `nnsight` on demand, instead of relying on stale training data. The **[leaderboard page](https://ndif-aletheias-leaderboard.hf.space/)** also embeds a Context7 chat you can ask directly.
 
 **To point an agent at it:**
 

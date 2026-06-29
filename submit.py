@@ -41,7 +41,7 @@ EXCLUDE_GLOBS = ["*.pyc", "*.pyo", ".DS_Store", "submission.csv"]
 MAX_ZIP_MB = 200  # guardrail; the Space may enforce its own limit.
 
 # The competition leaderboard Space; used when --space-url / $ALETHEIA_SPACE_URL is unset.
-DEFAULT_SPACE_URL = "https://ndif-leaderboard-dev.hf.space"
+DEFAULT_SPACE_URL = "https://ndif-aletheias-leaderboard.hf.space"
 
 # The runner builds its per-job venv from THIS interpreter, so --dry needs Python >= 3.10.
 MIN_PYTHON = (3, 10)

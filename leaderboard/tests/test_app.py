@@ -13,6 +13,15 @@ from aletheia_runner.results import ResultStore
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+@pytest.fixture(autouse=True)
+def _stub_ndif_whoami(monkeypatch):
+    """Treat every submitted key as a valid tier_1 NDIF account by default, so the
+    submit tests never reach the network. Tier-specific tests override this."""
+    from aletheia_runner import app as app_module
+    monkeypatch.setattr(app_module.ndif, "whoami",
+                        lambda key, host=None, **kw: {"email": "t@x", "tiers": ["tier_1"]})
+
+
 def _zip_with_fixture() -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
@@ -296,3 +305,83 @@ def test_concurrent_submissions_bounded_and_all_recorded(tmp_path, monkeypatch):
     assert all(r.status_code == 200 for r in resps), [r.text for r in resps]
     assert state["peak"] == 2          # semaphore caps concurrency (and runs overlapped)
     assert len(store.all()) == 4       # bucket lock: all four writes landed, none lost
+
+
+_VALID_TIER1 = {"email": "u@x", "tiers": ["tier_1"]}
+_VALID_UNTIERED = {"email": "u@x", "tiers": []}
+_UNRECOGNIZED = {"email": None, "tiers": []}   # NDIF's 200 for an unknown key
+
+
+def _client_capturing_ndif_key(tmp_path, monkeypatch, *, leaderboard_key=None,
+                               whoami_result=_VALID_TIER1):
+    """A client whose run_pipeline records the NDIF key threaded into the run.
+
+    ``whoami_result`` stubs ``ndif.whoami`` (a payload dict, or ``None`` for an
+    unreachable NDIF). Returns ``(client, captured)`` where ``captured["key"]`` is
+    set to the NDIF key the run was given (or stays None if the run never ran)."""
+    from aletheia_runner import app as app_module
+    from aletheia_runner.results import ResultRecord
+
+    captured: dict[str, str | None] = {"key": None}
+
+    def fake_run_pipeline(root, team, config, extra_env=None, on_submission_csv=None):
+        captured["key"] = (extra_env or {}).get("NDIF_API_KEY")
+        return [ResultRecord(team=team, notebook="n.ipynb", dataset_key="dummy",
+                             metrics={"balanced_accuracy": 1.0}, ok=True)]
+
+    monkeypatch.setattr(app_module.pipeline, "run_pipeline", fake_run_pipeline)
+    monkeypatch.setattr(app_module.ndif, "whoami",
+                        lambda key, host=None, **kw: whoami_result)
+
+    cfg = RunnerConfig(
+        datasets=[DatasetConfig(name="dummy", labels_uri=str(FIXTURES / "labels.csv"))],
+        leaderboard_ndif_api_key=leaderboard_key)
+    store = ResultStore(str(tmp_path / "results.jsonl"))
+    registry = TeamRegistry(str(tmp_path / "teams.json"))
+    return TestClient(create_app(cfg, store, registry)), captured
+
+
+def test_untiered_key_runs_under_shared_leaderboard_key(tmp_path, monkeypatch):
+    """A recognized key without tier_1 runs under the shared leaderboard key."""
+    client, captured = _client_capturing_ndif_key(
+        tmp_path, monkeypatch, leaderboard_key="LB-KEY", whoami_result=_VALID_UNTIERED)
+    assert _post(client, team="team-a", key="user-key").status_code == 200
+    assert captured["key"] == "LB-KEY"
+
+
+def test_tiered_key_runs_under_submitter_key(tmp_path, monkeypatch):
+    """A key WITH tier_1 runs under the submitter's own key, not the shared one."""
+    client, captured = _client_capturing_ndif_key(
+        tmp_path, monkeypatch, leaderboard_key="LB-KEY", whoami_result=_VALID_TIER1)
+    assert _post(client, team="team-a", key="user-key").status_code == 200
+    assert captured["key"] == "user-key"
+
+
+def test_unrecognized_key_is_rejected(tmp_path, monkeypatch):
+    """A key NDIF doesn't recognize (200 with null email) is rejected up front,
+    before the run — no team bound, no attempt charged."""
+    client, captured = _client_capturing_ndif_key(
+        tmp_path, monkeypatch, leaderboard_key="LB-KEY", whoami_result=_UNRECOGNIZED)
+    res = _post(client, team="team-a", key="bogus-key")
+    assert res.status_code == 400, res.text
+    assert captured["key"] is None              # the run never started
+    me = client.post("/api/me", headers={"X-NDIF-API-Key": "bogus-key"}).json()
+    assert me["team"] is None                   # key was not registered to a team
+
+
+def test_unreachable_ndif_falls_back_to_shared_key(tmp_path, monkeypatch):
+    """When whoami is unreachable (None), a transient blip doesn't block the
+    submission — it runs under the shared leaderboard key."""
+    client, captured = _client_capturing_ndif_key(
+        tmp_path, monkeypatch, leaderboard_key="LB-KEY", whoami_result=None)
+    assert _post(client, team="team-a", key="user-key").status_code == 200
+    assert captured["key"] == "LB-KEY"
+
+
+def test_untiered_without_shared_key_uses_submitter_key(tmp_path, monkeypatch):
+    """No shared key configured + recognized-but-untiered: keep the submitter's
+    own key (the run may fail later, but we don't block here)."""
+    client, captured = _client_capturing_ndif_key(
+        tmp_path, monkeypatch, leaderboard_key=None, whoami_result=_VALID_UNTIERED)
+    assert _post(client, team="team-a", key="user-key").status_code == 200
+    assert captured["key"] == "user-key"
