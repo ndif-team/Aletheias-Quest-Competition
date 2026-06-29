@@ -95,7 +95,7 @@ CONFIG.set_default_api_key("your-ndif-key")   # saves it to nnsight's config (pe
 # or, just for this session:  CONFIG.API.APIKEY = "your-ndif-key"
 ```
 
-**Submission limit & standing.** There is a per-team **submission rate limit** of one submission per 8 hours (**subject to change**; over it you get a clear "try again in …" message). Runs that *error* still spend the rate limit, so make sure to run `--dry` until it's clean. Submissions rejected up front (e.g. a malformed package, or due to rate-limiting) cost nothing. Check the **Entrant's Desk** on the [leaderboard page](https://ndif-aletheias-leaderboard.hf.space/) (enter your NDIF key) to see your team, best score, **attempts remaining**, and your submission history.
+**Submission limit & standing.** There is a per-team **submission rate limit** of one submission per 12 hours (**subject to change**; over it you get a clear "try again in …" message). Runs that *error* still spend the rate limit, so make sure to run `--dry` until it's clean. Submissions rejected up front (e.g. a malformed package, or due to rate-limiting) cost nothing. Check the **Entrant's Desk** on the [leaderboard page](https://ndif-aletheias-leaderboard.hf.space/) (enter your NDIF key) to see your team, best score, **attempts remaining**, and your submission history.
 
 ## Build with an agent
 
