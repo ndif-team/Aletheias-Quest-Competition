@@ -194,6 +194,10 @@ class RunnerConfig:
     install_allowlist: list[str] = field(          # install phase: PyPI
         default_factory=lambda: ["pypi.org", "pythonhosted.org"])
     hf_token: str | None = None
+    # Shared NDIF key threaded into a run when the submitter's own key lacks the
+    # usable tier (ndif.USABLE_TIER). Sourced from the LEADERBOARD_NDIF_API_KEY
+    # env var (an HF Space secret); never set in the committed config.
+    leaderboard_ndif_api_key: str | None = None
 
     def dataset_label_map(self) -> dict[str, str]:
         """Map each configured dataset key to its public codename (``dataset_label``).
@@ -227,4 +231,10 @@ class RunnerConfig:
 
     def with_env_overrides(self) -> "RunnerConfig":
         """Pull secrets/overrides from the process environment."""
-        return replace(self, hf_token=self.hf_token or os.environ.get("HF_TOKEN"))
+        return replace(
+            self,
+            hf_token=self.hf_token or os.environ.get("HF_TOKEN"),
+            leaderboard_ndif_api_key=(
+                self.leaderboard_ndif_api_key
+                or os.environ.get("LEADERBOARD_NDIF_API_KEY")),
+        )
