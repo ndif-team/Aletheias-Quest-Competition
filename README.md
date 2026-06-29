@@ -12,11 +12,6 @@
 &nbsp;
 [![Context7 docs](https://img.shields.io/badge/Context7-docs%20for%20agents-0b0b0b?style=for-the-badge)](https://context7.com/ndif-team/aletheias-quest-competition)
 
-Build a **deception detector**: for each model conversation in a private eval
-set, output the probability that the assistant's final message is _deceptive_.
-You build your detector with [nnsight](https://nnsight.net) and run model traces
-remotely on [NDIF](https://ndif.us).
-
 > **You must be an official participant to compete.** Apply at
 > **[aletheias-quest.github.io](https://aletheias-quest.github.io/)** — the
 > organizers will issue you an **NDIF API key** for the competition cluster (it's
@@ -27,7 +22,7 @@ remotely on [NDIF](https://ndif.us).
 > devs and other competitors anything about nnsight, NDIF, the data, or your method.
 
 > 📅 **Office hours** — bring questions about nnsight, NDIF, or your submission to us
-> on **Tuesdays & Fridays at 1 PM ET** on Zoom:
+> on **Tuesdays & Thursdays at 1 PM ET** on Zoom:
 > **[northeastern.zoom.us/my/jadenfk](https://northeastern.zoom.us/my/jadenfk)**.
 
 > 🤖 **Compete with an AI agent.** This repo ships an [`llms.txt`](llms.txt) that
@@ -37,17 +32,17 @@ remotely on [NDIF](https://ndif.us).
 > agent can pull up-to-date docs on demand. Open the repo in an agent and just ask.
 > See **[Build with an agent](#build-with-an-agent)**.
 
-## The competition at a glance
+## The Competition
 
 > Summarized from the official site — **[aletheias-quest.github.io](https://aletheias-quest.github.io/)**
 > is authoritative and details may change. Apply via the
 > **[application form](https://forms.office.com/r/BXVwPEweJi)**; questions to
 > **competition@cadenzalabs.org** or the Discord.
 
-**The task.** Detect when an LLM _lies_ — "the assistant lies if it states something it
-believes to be false." You get **black-box and white-box** access (query the model, and
-read/write activations at any layer) to a suite of LLMs (**"model organisms"**) induced to
-lie in different ways, served on NDIF.
+**Objective** Detect when an LLM _lies_ — "the assistant lies if it states something it believes to be false." Build a **deception detector**: for each model conversation in a private eval
+set, output the probability that the assistant's final message is _deceptive_.
+You build your detector with [nnsight](https://nnsight.net) and run model traces
+remotely on [NDIF](https://ndif.us).
 
 **Timeline (2026).** Applications open **Jun 4**, close **Jun 21** (rolling). Competition runs
 **Jun 29 → Jul 26** (main submission deadline). **Bonus week** (a surprise task) runs **Jul 27 →
@@ -57,6 +52,9 @@ Jul 31**. Invite-only **awards event Aug 25** in Boston.
 categories — prizes stack). Categories: **white-box** methods (1st/2nd/3rd), **black-box**
 methods (1st/2nd/3rd), **weekly leaderboard** (1st/2nd/3rd), and **judge's awards** (Novelty,
 Scalability). **You must rank above the 4 baseline methods to win.**
+
+**Black-box and White-box** access (query the model, and
+read/write activations at any layer) to a suite of LLMs and fine-tuned "model organisms" induced to lie in different ways, served on NDIF.
 
 **Scoring.** Ranked by **mean balanced accuracy** across the held-out datasets; **average AUROC**
 breaks ties. Scored per _(model organism, dataset)_ unit, averaged across all datasets.
@@ -86,80 +84,63 @@ advised by David Bau (NDIF Director).
 ## Quick start
 
 1. **Clone** this repo.
-2. **Set up a local dev environment** (Python ≥3.10; the runner targets 3.12). The
-   quickest path is the bundled script, which creates `./.venv` and installs
-   everything needed for development **and** for `python submit.py --dry`:
+
+   ```bash
+   git clone https://github.com/ndif-team/Aletheias-Quest-Competition.git
+   ```
+
+2. **Set up a local dev environment** (Python ≥3.11; the runner targets 3.12). The
+   quickest path is the bundled script, which creates `./.venv`:
+
    ```bash
    ./setup_dev.sh && source .venv/bin/activate
    ```
+
    It installs [`requirements-dev.txt`](requirements-dev.txt), which mirrors the
-   leaderboard base image and pins the competition's **nnsight** — the
-   `hackathon/peft` branch (it targets the hackathon NDIF cluster, is **required**
-   both locally and on the Space, and **may change before the start**). To install
-   into an environment you already manage (e.g. conda) instead:
+   leaderboard base image and pins the competition's **nnsight** the
+   `hackathon/peft` branch (it targets the hackathon NDIF cluster **required**
+
+   To install into an environment you already manage (e.g. conda) instead:
+
    ```bash
    pip install -r requirements-dev.txt
-   # (just nnsight, if that's all you need:)
-   pip install 'nnsight @ git+https://github.com/ndif-team/nnsight.git@hackathon/peft'
    ```
+
 3. For local development, `hf auth login` so your HF token is available.
-4. Look at [`submission/example.ipynb`](submission/example.ipynb) — a minimal
-   working baseline detector that follows the contract; replace the contents of the `detector` method to user the lie classification method you developed it with your detector.
-5. Replace `
-`example.ipynb`, rename or delete it so only your notebook remains.
-6. **Verify locally first** (no upload) — runs your notebook end-to-end in a venv
-   (installing your `requirements.txt`) against the datasets listed in
-   [`dry.yaml`](dry.yaml) and prints a score, so you catch broken deps / output
-   before submitting. **Edit `dry.yaml` to rehearse on different datasets** — each
-   entry is an inputs repo plus its labels repo. On failure it prints the **full
-   error/traceback** — this is where you debug, because the leaderboard itself only
-   returns a generic error (see _Execution sandbox_):
+4. Edit [`submission/example.ipynb`](submission/example.ipynb) — a minimal working
+   baseline detector that follows the contract. Replace the body of its `detect`
+   function with your own lie-classification method:
+   ```python
+   # Inputs:
+   #   model: nnsight model handle for the dataset's generator (trace it)
+   #   model_id: its HF id
+   #   lora_id: its LoRA adapter id (or None)
+   #   batch: one right-padded batch, with input_ids, attention_mask, and the
+   #     gather_last / pool_response helpers over the response span
+   # Output:
+   #   a (B,) tensor of deception scores in [0, 1], .save()'d inside the trace
+   def detect(model, model_id, lora_id, batch):
+   ```
+5. **Verify locally before submitting.** `python submit.py --dry` runs your notebook
+   end-to-end (installing your `requirements.txt`) against the datasets in
+   [`dry.yaml`](dry.yaml) and prints a score, catching broken deps / bad output before
+   you spend a real submission. See [Execution sandbox](#execution-sandbox) for
+   configuring `dry.yaml`, the `--limit` flag, and reading the full traceback.
    ```bash
    export NDIF_API_KEY="your-ndif-key"
    python submit.py --dry
-   # faster partial rehearsal — score only the first 32 rows of each dataset:
-   python submit.py --dry --limit 32
    ```
-   `--limit N` is forwarded to your notebook as `$ALETHEIA_LIMIT` (see how
-   `submission/example.ipynb` reads it); omit it to score every row. It works on a
-   real submit too, but the leaderboard sets no limit, so a full submission always
-   scores every row.
-7. Submit for real — give your **team name on the first submission only**, and
-   **tag your method** `--tag white` (white-box: uses activations/weights) or
+6. Submit for real — give your **team name on the first submission only**, and
+   **tag your method** `--tag white` (white-box: uses nnsight to access activations/weights) or
    `--tag black` (black-box: query-only). The tag shows as a badge on the
    leaderboard and is filterable (it maps to the white-box / black-box prize
    categories); omit it to stay untagged.
    ```bash
-   python submit.py --team "your-team-name" --tag white --ndif-api-key <YOUR_NDIF_KEY> --space-url <LEADERBOARD_SPACE_URL>
-   # afterwards, just:  python submit.py --tag white --ndif-api-key <YOUR_NDIF_KEY> --space-url <LEADERBOARD_SPACE_URL>
+   python submit.py --team "your-team-name" --tag white --ndif-api-key <YOUR_NDIF_KEY>
+   # afterwards, just:  python submit.py --tag white --ndif-api-key <YOUR_NDIF_KEY>
    ```
-
-**To submit you need:** an **NDIF API key** (`$NDIF_API_KEY` or `--ndif-api-key`) —
-always required — and the leaderboard Space URL (`--space-url` or
-`$ALETHEIA_SPACE_URL`). Your **NDIF key is your identity**: the first time you
-submit, your `--team` name is bound to it (and must be unused by anyone else);
-after that the key alone identifies your team, so you needn't pass `--team` again.
-
-**Giving nnsight your key (local development).** On the leaderboard your key is set
-for you. To run nnsight traces **locally** (tutorials, debugging your method),
-nnsight needs your NDIF key — it reads the **`NDIF_API_KEY`** environment variable
-automatically, so `export NDIF_API_KEY="your-ndif-key"` is enough. Or set it from
-Python:
-
-```python
-from nnsight import CONFIG
-CONFIG.set_default_api_key("your-ndif-key")   # saves it to nnsight's config (persists)
-# or, just for this session:  CONFIG.API.APIKEY = "your-ndif-key"
-```
-
-**Submission limit & your standing.** There is a per-team **submission rate limit**
-(the exact budget is **subject to change**; over it you get a clear "try again in …"
-message). An attempt is spent only on a submission that **actually runs** — and a run
-that _errors_ still spends it, so `--dry` until it's clean; a submission rejected up
-front (e.g. a malformed package, or being rate-limited) costs nothing. Check the
-**Entrant's Desk** on the [leaderboard page](https://ndif-leaderboard-dev.hf.space/)
-(enter your NDIF key) to see your team, best score, **attempts remaining**, and your
-submission history.
+7. **Check your Standing** on the [leaderboard page](https://ndif-leaderboard-dev.hf.space/)
+   (enter your NDIF key) to see your team, best score, **attempts remaining**, and submission history.
 
 ## Build with an agent
 
@@ -246,6 +227,10 @@ numbers are the **average across datasets**, and the leaderboard ranks by mean
 **balanced accuracy** (click a row to see every metric per dataset). It also shows
 your total runtime.
 
+**Packaging.** You can include extra files (probe weights, helper modules) in the repo
+— they ship with your submission; keep the total package reasonable (< 200 MB).
+`submit.py` packages the repo and POSTs it to the leaderboard Space.
+
 ## Dependencies (`submission/requirements.txt`)
 
 Put a `requirements.txt` in [`submission/`](submission/) (next to your notebook).
@@ -268,37 +253,38 @@ to add the package to the NDIF environment.
 
 ## Execution sandbox
 
-Your notebook runs in an isolated sandbox (filesystem-confined, syscall-filtered,
-resource-limited). Implications for your code:
+Your notebook runs in an isolated sandbox — filesystem-confined, syscall-filtered,
+and resource-limited (you may only write under the working directory; CPU/memory/time
+are capped). The constraint that bites: **network egress is allowlisted by hostname**
+— only the NDIF cluster (`aletheias.api.ndif.us`, under `api.ndif.us`) with its results
+bucket and `huggingface.co`/`hf.co` are reachable; everything else is blocked, and HF
+is read-only. Keep your code to **NDIF traces + HF model configs/tokenizers**.
 
-- The eval dataset is **predownloaded**; `load_dataset(DATASET_NAME, …)` reads it
-  offline (you can't load other datasets from the Hub at runtime).
-- Your **`NDIF_API_KEY`** and **`HF_TOKEN`** are forwarded into the run (set them
-  before `submit.py`, or pass `--ndif-api-key`/`--hf-token`), so nnsight
-  authenticates remote traces and you can load gated HF models you have access to.
-- `LanguageModel("…")` works: `huggingface.co` is reachable for model
-  config/tokenizer. Run the weights on NDIF with `remote=True` (don't dispatch
-  them locally).
-- Network egress is allowlisted by hostname to the NDIF cluster
-  (`aletheias.api.ndif.us`, under `api.ndif.us`) + its results bucket and
-  `huggingface.co`/`hf.co`; everything else is blocked. HF is read-only (model
-  configs/tokenizers download fine; you can't upload).
-- You may only write under the working directory; CPU/memory/time are capped.
-- **If your run fails here, the leaderboard returns a _generic_ error** (the real
-  error could leak the private eval data). To see the actual traceback, reproduce
-  with `python submit.py --dry` — same pipeline, the datasets in `dry.yaml`, full errors.
+**Reproduce failures locally with `--dry`.** Failures on the leaderboard return a
+**generic** error (the real traceback could leak the private eval data).
+`python submit.py --dry` runs the same pipeline (venv → your `requirements.txt` →
+notebook → NDIF traces → scoring) and prints the **full traceback**, so it's where you
+debug. It scores against the datasets listed in [`dry.yaml`](dry.yaml) — each entry is
+an inputs repo plus its labels repo; edit it to rehearse on whatever datasets you can
+access:
 
-`--dry` runs the real pipeline (venv → `requirements.txt` → your notebook → NDIF
-traces → scoring), so it catches dependency, code, NDIF, and output errors. It
-does **not** apply the network/filesystem confinement above (so it stays portable)
-— a notebook that reaches a non-allowlisted host or writes outside its directory
-passes locally but fails here. Keep your code to NDIF + HF and the working dir.
+```yaml
+datasets:
+  - name: aletheias-quest/dev-instructed-deception-gemma-3-27b-it-None # inputs (test split)
+    labels_uri: aletheias-quest/dev-instructed-deception-gemma-3-27b-it-None-labels # held-out labels
+    id_column: index # joins predictions to labels
+    label_column: deceptive # binary label (true = deceptive)
+```
 
-## Notes
+`--limit N` scores only the first N rows of each dataset (forwarded to your notebook as
+`$ALETHEIA_LIMIT` — see how `submission/example.ipynb` reads it) for a fast rehearsal;
+omit it to score every row. It works on a real submit too, but the leaderboard sets no
+limit, so a full submission always scores every row.
 
-- **All model compute must run on NDIF** (`remote=True` in your traces) — the
-  leaderboard has no GPU. (When developing locally, run however you like.)
-- You can include extra files (probe weights, helper modules) in the repo — they
-  ship with your submission. Keep the total package reasonable (< 200 MB).
-- `submit.py` packages the repo and POSTs it to the leaderboard Space; set the
-  Space URL via `--space-url` or the `ALETHEIA_SPACE_URL` environment variable.
+```bash
+python submit.py --dry --limit 32
+```
+
+The one bug `--dry` can't catch: it does **not** apply the sandbox's network/filesystem
+confinement, so a notebook that reaches a non-allowlisted host passes locally but fails
+on the leaderboard.
