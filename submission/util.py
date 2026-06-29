@@ -194,7 +194,7 @@ def chat_preprocess(messages: list, tokenizer, max_len: int = 256):
 
 
 def run_full_session(dataset_name: str, detect_fn: Callable, *,
-                     preprocess: Callable = chat_preprocess, model=None,
+                     preprocess: Callable = chat_preprocess,
                      batch_size: int = 32, max_len: int = 256, remote: bool = True,
                      limit: int | None = None, **detect_kwargs):
     """Score every row of ``dataset_name`` in ONE remote NDIF session.
@@ -219,18 +219,24 @@ def run_full_session(dataset_name: str, detect_fn: Callable, *,
     one conversation into tokens + its response span; the default is
     :func:`chat_preprocess`. Returns a numpy array of scores in the dataset's
     original row order (feed it, with ``load_examples(...)["index"]``, to
-    ``write_submission``). Pass a preloaded ``model=`` to skip rebuilding it;
-    ``limit`` scores only the first N rows (a quick rehearsal)."""
+    ``write_submission``). ``limit`` scores only the first N rows (a quick
+    rehearsal).
+
+    The model is **always** built from the dataset itself (row 0's ``model`` +
+    ``lora``) — there is no ``model=`` override. A detector must run on the
+    activations of the model that generated the data; forcing a different model
+    (e.g. applying a probe's base model to every dataset) would read the wrong
+    network's activations."""
     import numpy as np
     import torch
 
     # Local peek at row 0 ONLY — just enough to build the right model (you can't
     # build a model inside its own session). The full dataset load + tokenize +
-    # model calls all happen inside the session below, as one NDIF job.
+    # model calls all happen inside the session below, as one NDIF job. The model
+    # ALWAYS comes from the dataset — never an outside override.
     first = load_examples(dataset_name)[0]
     model_id, lora_id = first["model"], first.get("lora")
-    if model is None:
-        model = build_model(model_id, lora_id)
+    model = build_model(model_id, lora_id)
 
     tok = model.tokenizer
     pad_id = tok.pad_token_id if tok.pad_token_id is not None else tok.eos_token_id
