@@ -100,13 +100,13 @@ own notebook is in place, or the two together trip the rejection.
   are what run on the **leaderboard**. You can't read them; your notebook runs *over*
   them in the sandbox and can't exfiltrate them.
 
-`dev` covers the **`instructed-deception`** scenario only; the private splits include
-that and other scenarios. So a method tuned only on dev's instructed-deception should
+`dev` covers a **single scenario** only; the private splits include
+that and other scenarios. So a method tuned only on dev's one scenario should
 still generalize — don't overfit to it.
 
 ### Dataset shape
 Each dataset is **one HF repo, single `test` split**, named
-`aletheias-quest/<split>-instructed-deception-<base>-<lora>` with a sibling
+`aletheias-quest/<split>-<scenario>-<base>-<lora>` with a sibling
 `…-labels` repo. The runner sets `DATASET_NAME` per run; load it with
 `load_dataset(DATASET_NAME, split="test")` (or `util.load_examples`). Per-row columns:
 
@@ -122,8 +122,8 @@ don't hardcode unless your method requires a fixed model, like a probe's trainin
 
 | Base model (`model`) | LoRA "model organisms" (`lora`) |
 |---|---|
-| `google/gemma-3-27b-it` | `abliterated-collusion-gemma3-27b-v1`, `hidden-goal-model-organism-gemma3-27b-v1` |
-| `Qwen3.5-27B` | `botc-latest-checkpoint`, `echoblast-model-organism` |
+| `google/gemma-3-27b-it` | several per-organism LoRA adapters — read each row's `lora` |
+| `Qwen3.5-27B` | several per-organism LoRA adapters — read each row's `lora` |
 | `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16` | (used as a base) |
 
 All of these are **served on NDIF and available at all times** for remote tracing —
