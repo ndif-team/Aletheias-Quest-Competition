@@ -243,9 +243,9 @@ def test_prepare_inputs_never_loads_the_labels_dataset(tmp_path, monkeypatch):
 
 
 def test_prepare_inputs_predownloads_referenced_loras(tmp_path, monkeypatch):
-    """LoRA adapters named in a dataset's ``lora`` column are snapshot-downloaded by
-    the trusted parent, so the sandboxed child loads them from cache (no big write,
-    no RLIMIT_FSIZE / EFBIG). None and non-repo values are skipped; repos deduped."""
+    """LoRA adapters named in a dataset's ``lora`` column are predownloaded by the
+    trusted parent, so the sandboxed child loads them from cache (no big write, no
+    RLIMIT_FSIZE / EFBIG). None and non-repo values are skipped; repos deduped."""
     class FakeDS:
         column_names = ["index", "messages", "lora"]
 
@@ -255,14 +255,14 @@ def test_prepare_inputs_predownloads_referenced_loras(tmp_path, monkeypatch):
                     None, "bare-no-slash"]
 
     monkeypatch.setattr("datasets.load_dataset", lambda name, *a, **k: FakeDS())
-    downloaded = []
-    monkeypatch.setattr("huggingface_hub.snapshot_download",
-                        lambda repo, *a, **k: downloaded.append(repo))
+    got = []
+    monkeypatch.setattr(data, "_predownload_adapter",
+                        lambda repo, adir, token: got.append(repo))
     cfg = RunnerConfig(
         datasets=[DatasetConfig(name="NDIF/fake-eval", labels_uri=LABELS_URI)],
         cache_dir=str(tmp_path / "cache"))
     data.prepare_inputs(cfg)
-    assert downloaded == ["aletheias-quest/a-mo-1"]   # deduped; None + bare skipped
+    assert got == ["aletheias-quest/a-mo-1"]          # deduped; None + bare skipped
 
 
 def test_prepare_inputs_survives_a_failed_adapter_predownload(tmp_path, monkeypatch):
@@ -276,10 +276,10 @@ def test_prepare_inputs_survives_a_failed_adapter_predownload(tmp_path, monkeypa
 
     monkeypatch.setattr("datasets.load_dataset", lambda name, *a, **k: FakeDS())
 
-    def boom(repo, *a, **k):
+    def boom(repo, adir, token):
         raise OSError("[Errno 28] No space left on device")
 
-    monkeypatch.setattr("huggingface_hub.snapshot_download", boom)
+    monkeypatch.setattr(data, "_predownload_adapter", boom)
     cache = tmp_path / "cache"
     cfg = RunnerConfig(
         datasets=[DatasetConfig(name="NDIF/fake-eval", labels_uri=LABELS_URI)],
@@ -288,31 +288,39 @@ def test_prepare_inputs_survives_a_failed_adapter_predownload(tmp_path, monkeypa
     assert not (cache / ".prepared").exists()      # marker skipped -> retries next run
 
 
-def test_child_env_seeds_predownloaded_adapters_as_readonly_symlinks(tmp_path):
-    """Per job, the child's HF hub cache is seeded with symlinks to the (shared,
-    read-only) predownloaded adapters — a cache hit, so no re-download/large write —
-    while its own dir stays writable for live base-config fetches."""
+def test_child_env_reconstructs_adapter_cache_from_flat_files(tmp_path):
+    """Per job, the child's HF hub cache is REBUILT from the flat adapter downloads:
+    blobs/<etag> and snapshots/<sha>/<file> symlinks point at the (read-only) flat
+    files, so peft's load is a cache hit — no re-download, no large write. Symlinks
+    live in scratch (which supports them) even if the flat store (a bucket) doesn't."""
     ds_cache = tmp_path / "cache" / "datasets"
     ds_cache.mkdir(parents=True)
     (ds_cache / "marker").write_text("x")            # copytree needs a real dir
-    hub = tmp_path / "cache" / "hf_hub"
-    (hub / "models--foo--bar" / "snapshots").mkdir(parents=True)
-    (hub / "models--foo--bar" / "snapshots" / "adapter.safetensors").write_text("W")
-    (hub / "not-a-model").mkdir()                     # must NOT be seeded
 
-    layout = data.DataLayout(datasets_cache=ds_cache, hub_cache=hub)
+    adapters = tmp_path / "cache" / "adapters"
+    adir = adapters / "aletheias-quest__foo"
+    adir.mkdir(parents=True)
+    (adir / "adapter_model.safetensors").write_text("WEIGHTS")
+    (adir / "adapter_config.json").write_text("{}")
+    (adir / data._MANIFEST).write_text(json.dumps({
+        "repo": "aletheias-quest/foo", "sha": "abc123def",
+        "etags": {"adapter_model.safetensors": "e_big", "adapter_config.json": "e_cfg"}}))
+
+    layout = data.DataLayout(datasets_cache=ds_cache, adapters_dir=adapters)
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     env = layout.child_env(scratch, offline=True)
 
-    seeded = scratch / "hf_hub_cache" / "models--foo--bar"
-    assert seeded.is_symlink()
-    assert seeded.resolve() == (hub / "models--foo--bar").resolve()
-    assert not (scratch / "hf_hub_cache" / "not-a-model").exists()
+    root = scratch / "hf_hub_cache" / "models--aletheias-quest--foo"
+    assert (root / "refs" / "main").read_text() == "abc123def"
+    blob = root / "blobs" / "e_big"
+    assert blob.is_symlink()
+    assert blob.resolve() == (adir / "adapter_model.safetensors").resolve()
+    ptr = root / "snapshots" / "abc123def" / "adapter_model.safetensors"
+    assert ptr.is_symlink()                          # snapshot -> blob -> flat file
+    assert ptr.read_text() == "WEIGHTS"              # readable through the whole chain
     assert env["HF_HUB_CACHE"] == str(scratch / "hf_hub_cache")
     assert env["HF_DATASETS_OFFLINE"] == "1"
-    # readable through the symlink (what a cache hit relies on)
-    assert (seeded / "snapshots" / "adapter.safetensors").read_text() == "W"
 
 
 def test_proxy_serves_403_on_a_real_connect_to_an_attacker_host():
