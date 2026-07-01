@@ -40,6 +40,41 @@ def test_status_disabled(tmp_path):
     assert s["enabled"] is False and s["remaining"] is None
 
 
+def _exempt(tmp_path, names):
+    import json
+    p = tmp_path / "exempt.json"
+    p.write_text(json.dumps(names))
+    return str(p)
+
+
+def test_exempt_team_is_never_rate_limited(tmp_path):
+    rl = RateLimiter(str(tmp_path / "rl.json"), max_submissions=1, window_seconds=100,
+                     exempt_uri=_exempt(tmp_path, ["dev-team", "Jaden"]))
+    # a normal team is capped at 1...
+    assert rl.check_and_consume("someone", now=10)[0]
+    assert not rl.check_and_consume("someone", now=11)[0]
+    # ...but an exempt dev team can submit repeatedly
+    for i in range(5):
+        ok, retry = rl.check_and_consume("dev-team", now=10 + i)
+        assert ok and retry == 0
+    assert rl.status("dev-team")["exempt"] is True
+    assert rl.status("dev-team")["remaining"] is None
+
+
+def test_exempt_list_is_read_only_and_survives_a_bad_file(tmp_path):
+    # missing file -> nobody exempt, no error
+    rl = RateLimiter(str(tmp_path / "rl.json"), 1, 100,
+                     exempt_uri=str(tmp_path / "nope.json"))
+    assert rl.exempt_teams() == set()
+    assert not rl.is_exempt("dev-team")
+    # malformed file -> treated as empty, never raises (must not block submissions)
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json")
+    rl2 = RateLimiter(str(tmp_path / "rl.json"), 1, 100, exempt_uri=str(bad))
+    assert rl2.exempt_teams() == set()
+    assert rl2.check_and_consume("anyone", now=1)[0]
+
+
 def test_disabled_when_max_or_window_zero(tmp_path):
     for kwargs in (dict(max_submissions=0, window_seconds=100),
                    dict(max_submissions=3, window_seconds=0)):

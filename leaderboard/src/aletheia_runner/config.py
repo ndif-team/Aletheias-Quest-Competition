@@ -153,6 +153,11 @@ class RunnerConfig:
     rate_limits_uri: str = "rate_limits.json"
     rate_limit_max: int = 0
     rate_limit_window_hours: float = 0.0
+    # Teams exempt from the rate limit (developers): a JSON list of team names in a
+    # separate, read-only bucket file the app never writes, so it can be edited by
+    # hand at any time. Empty -> derived as ``rate_limit_exempt.json`` next to
+    # ``rate_limits_uri`` (so it lives in the same bucket by default).
+    rate_limit_exempt_uri: str = ""
     # The single timeout: wall-clock seconds allowed per (notebook, dataset) run.
     # Each run gets a fresh budget (e.g. 1800 = 30 min each for two datasets). The
     # sandbox kills the run's process group when it's exceeded; there is no separate

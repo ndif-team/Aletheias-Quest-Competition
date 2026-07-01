@@ -31,7 +31,8 @@ from .archive import SubmissionArchive
 from .config import PRIMARY_METRIC, SECONDARY_METRIC, RunnerConfig, dataset_label
 from .ratelimit import RateLimiter
 from .registry import TeamRegistry
-from .results import BaseResultStore, make_store, summarize_submission
+from .results import (BaseResultStore, is_bucket_uri, make_store, parse_bucket_uri,
+                      summarize_submission)
 
 WEB_DIR = Path(__file__).parent / "web"
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "250"))
@@ -423,9 +424,15 @@ def _app_from_env() -> FastAPI:
     results_uri = os.environ.get("RESULTS_URI", config.results_uri)
     store = make_store(results_uri, token=config.hf_token)
     registry = TeamRegistry(config.teams_uri, token=config.hf_token)
+    # Developer exempt list: explicit uri, else a sibling of the rate-limits file
+    # (same bucket) so it works with no extra config.
+    exempt_uri = config.rate_limit_exempt_uri
+    if not exempt_uri and is_bucket_uri(config.rate_limits_uri):
+        bucket_id, _ = parse_bucket_uri(config.rate_limits_uri, "rate_limits.json")
+        exempt_uri = f"bucket://{bucket_id}/rate_limit_exempt.json"
     limiter = RateLimiter(config.rate_limits_uri, config.rate_limit_max,
                           config.rate_limit_window_hours * 3600,
-                          token=config.hf_token)
+                          token=config.hf_token, exempt_uri=exempt_uri or None)
     archive = SubmissionArchive(config.submissions_uri, token=config.hf_token)
     return create_app(config, store, registry, limiter, archive)
 

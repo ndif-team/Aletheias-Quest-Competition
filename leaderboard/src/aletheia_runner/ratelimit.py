@@ -26,15 +26,45 @@ class RateLimiter:
     ``max_submissions <= 0`` or ``window_seconds <= 0`` disables it (unlimited)."""
 
     def __init__(self, uri: str, max_submissions: int, window_seconds: float,
-                 token: str | None = None):
+                 token: str | None = None, exempt_uri: str | None = None):
         self.uri = uri
         self.max = int(max_submissions)
         self.window = float(window_seconds)
         self.token = token
+        # Optional read-only JSON list of team names exempt from the limit
+        # (developers). The app never writes it, so it's safe to hand-edit.
+        self.exempt_uri = exempt_uri
 
     @property
     def enabled(self) -> bool:
         return self.max > 0 and self.window > 0
+
+    def _load_json(self, uri: str):
+        """Load JSON from a ``bucket://`` uri or a local path; None if missing."""
+        if is_bucket_uri(uri):
+            from huggingface_hub import download_bucket_files
+            bucket_id, path = parse_bucket_uri(uri, DEFAULT_NAME)
+            with tempfile.TemporaryDirectory(prefix="aletheia-rl-") as tmp:
+                local = Path(tmp) / "f.json"
+                download_bucket_files(bucket_id, files=[(path, str(local))],
+                                      raise_on_missing_files=False, token=self.token)
+                return json.loads(local.read_text()) if local.exists() else None
+        p = Path(uri)
+        return json.loads(p.read_text()) if p.exists() else None
+
+    def exempt_teams(self) -> set[str]:
+        """The set of exempt (developer) team names. Empty if no list is configured,
+        missing, or malformed — a bad exempt file must never break submissions."""
+        if not self.exempt_uri:
+            return set()
+        try:
+            data = self._load_json(self.exempt_uri)
+        except Exception:  # noqa: BLE001 - never let a bad exempt file block a run
+            return set()
+        return {str(t) for t in data} if isinstance(data, list) else set()
+
+    def is_exempt(self, team: str) -> bool:
+        return bool(team) and team in self.exempt_teams()
 
     def _load(self) -> dict:
         if is_bucket_uri(self.uri):
@@ -66,7 +96,7 @@ class RateLimiter:
         allowed, else the seconds until the current window resets. This is a
         read-modify-write of the shared state, so the caller must serialize it
         (the app holds the bucket lock)."""
-        if not self.enabled:
+        if not self.enabled or self.is_exempt(team):
             return True, 0
         now = time.time() if now is None else now
         state = self._load()
@@ -87,6 +117,10 @@ class RateLimiter:
         """Current usage for ``team`` without consuming a slot. ``resets_at`` is an
         epoch (seconds) or ``None`` when no window is open."""
         window_hours = self.window / 3600 if self.window else 0
+        if self.is_exempt(team):
+            return {"enabled": self.enabled, "exempt": True, "max": self.max,
+                    "window_hours": window_hours, "used": 0, "remaining": None,
+                    "resets_at": None}
         if not self.enabled:
             return {"enabled": False, "max": self.max, "window_hours": window_hours,
                     "used": 0, "remaining": None, "resets_at": None}
