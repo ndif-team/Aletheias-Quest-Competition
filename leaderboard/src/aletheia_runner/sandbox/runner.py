@@ -233,11 +233,6 @@ def setup_job(
     if confine:
         pkg_path_entry = str(Path(__file__).resolve().parent.parent)
         ro = landlock.default_system_ro_paths() + [pkg_path_entry]
-        # The predownloaded LoRA adapters (flat files) live here; the child's per-job
-        # reconstructed hub cache symlinks into it, so it must be readable.
-        adapters = getattr(data_layout, "adapters_dir", None)
-        if adapters and Path(adapters).exists():
-            ro.append(str(adapters))
         rw = [str(scratch)] + landlock.essential_dev_paths()
         sb = landlock.LandlockSandbox(ro_paths=ro, rw_paths=rw)
         run_allow = config.egress_allowlist if config.enforce_egress else None

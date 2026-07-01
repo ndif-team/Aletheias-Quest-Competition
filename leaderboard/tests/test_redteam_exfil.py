@@ -242,85 +242,27 @@ def test_prepare_inputs_never_loads_the_labels_dataset(tmp_path, monkeypatch):
     assert LABELS_URI not in loaded
 
 
-def test_prepare_inputs_predownloads_referenced_loras(tmp_path, monkeypatch):
-    """LoRA adapters named in a dataset's ``lora`` column are predownloaded by the
-    trusted parent, so the sandboxed child loads them from cache (no big write, no
-    RLIMIT_FSIZE / EFBIG). None and non-repo values are skipped; repos deduped."""
-    class FakeDS:
-        column_names = ["index", "messages", "lora"]
-
-        def unique(self, col):
-            assert col == "lora"
-            return ["aletheias-quest/a-mo-1", "aletheias-quest/a-mo-1",
-                    None, "bare-no-slash"]
-
-    monkeypatch.setattr("datasets.load_dataset", lambda name, *a, **k: FakeDS())
-    got = []
-    monkeypatch.setattr(data, "_predownload_adapter",
-                        lambda repo, adir, token: got.append(repo))
-    cfg = RunnerConfig(
-        datasets=[DatasetConfig(name="NDIF/fake-eval", labels_uri=LABELS_URI)],
-        cache_dir=str(tmp_path / "cache"))
-    data.prepare_inputs(cfg)
-    assert got == ["aletheias-quest/a-mo-1"]          # deduped; None + bare skipped
-
-
-def test_prepare_inputs_survives_a_failed_adapter_predownload(tmp_path, monkeypatch):
-    """A failed adapter predownload degrades only that dataset — prepare_inputs must
-    not raise (other datasets still run), and it skips the marker so it retries."""
+def test_prepare_inputs_predownloads_only_adapter_configs(tmp_path, monkeypatch):
+    """LoRA adapters referenced by a dataset are predownloaded CONFIG-ONLY: the
+    weights are applied remotely (nnsight meta device / NDIF), so the sandbox never
+    fetches the multi-GB safetensors — which would trip the child's RLIMIT_FSIZE."""
     class FakeDS:
         column_names = ["lora"]
 
         def unique(self, col):
-            return ["aletheias-quest/broken-adapter"]
+            return ["aletheias-quest/a-mo-1", "aletheias-quest/a-mo-1", None, "bare"]
 
     monkeypatch.setattr("datasets.load_dataset", lambda name, *a, **k: FakeDS())
-
-    def boom(repo, adir, token):
-        raise OSError("[Errno 28] No space left on device")
-
-    monkeypatch.setattr(data, "_predownload_adapter", boom)
-    cache = tmp_path / "cache"
+    calls = []
+    monkeypatch.setattr("huggingface_hub.snapshot_download",
+                        lambda repo, *a, **k: calls.append((repo, k.get("ignore_patterns"))))
     cfg = RunnerConfig(
         datasets=[DatasetConfig(name="NDIF/fake-eval", labels_uri=LABELS_URI)],
-        cache_dir=str(cache))
-    data.prepare_inputs(cfg)                       # must NOT raise
-    assert not (cache / ".prepared").exists()      # marker skipped -> retries next run
-
-
-def test_child_env_reconstructs_adapter_cache_from_flat_files(tmp_path):
-    """Per job, the child's HF hub cache is REBUILT from the flat adapter downloads:
-    blobs/<etag> and snapshots/<sha>/<file> symlinks point at the (read-only) flat
-    files, so peft's load is a cache hit — no re-download, no large write. Symlinks
-    live in scratch (which supports them) even if the flat store (a bucket) doesn't."""
-    ds_cache = tmp_path / "cache" / "datasets"
-    ds_cache.mkdir(parents=True)
-    (ds_cache / "marker").write_text("x")            # copytree needs a real dir
-
-    adapters = tmp_path / "cache" / "adapters"
-    adir = adapters / "aletheias-quest__foo"
-    adir.mkdir(parents=True)
-    (adir / "adapter_model.safetensors").write_text("WEIGHTS")
-    (adir / "adapter_config.json").write_text("{}")
-    (adir / data._MANIFEST).write_text(json.dumps({
-        "repo": "aletheias-quest/foo", "sha": "abc123def",
-        "etags": {"adapter_model.safetensors": "e_big", "adapter_config.json": "e_cfg"}}))
-
-    layout = data.DataLayout(datasets_cache=ds_cache, adapters_dir=adapters)
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-    env = layout.child_env(scratch, offline=True)
-
-    root = scratch / "hf_hub_cache" / "models--aletheias-quest--foo"
-    assert (root / "refs" / "main").read_text() == "abc123def"
-    blob = root / "blobs" / "e_big"
-    assert blob.is_symlink()
-    assert blob.resolve() == (adir / "adapter_model.safetensors").resolve()
-    ptr = root / "snapshots" / "abc123def" / "adapter_model.safetensors"
-    assert ptr.is_symlink()                          # snapshot -> blob -> flat file
-    assert ptr.read_text() == "WEIGHTS"              # readable through the whole chain
-    assert env["HF_HUB_CACHE"] == str(scratch / "hf_hub_cache")
-    assert env["HF_DATASETS_OFFLINE"] == "1"
+        cache_dir=str(tmp_path / "cache"))
+    data.prepare_inputs(cfg)
+    assert [c[0] for c in calls] == ["aletheias-quest/a-mo-1"]   # deduped; None/bare skipped
+    ignored = calls[0][1] or []
+    assert "*.safetensors" in ignored and "*.bin" in ignored     # weights excluded
 
 
 def test_proxy_serves_403_on_a_real_connect_to_an_attacker_host():
