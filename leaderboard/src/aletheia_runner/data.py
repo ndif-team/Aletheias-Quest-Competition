@@ -125,9 +125,21 @@ def prepare_inputs(config: RunnerConfig) -> DataLayout:
     # has no RLIMIT_FSIZE, so multi-GB adapters download fine here; the sandboxed
     # child then loads them from cache (no large write). snapshot_download is
     # idempotent — an already-cached, unchanged adapter is a no-op.
+    #
+    # Fail-safe: a failed predownload (e.g. a flaky mount, out-of-space) must NOT
+    # break the whole submission — it only degrades THAT dataset (the child then
+    # downloads the adapter live and may hit FSIZE), while every other dataset
+    # still runs. On any failure we skip the marker so the next run retries.
     from huggingface_hub import snapshot_download
+    all_ok = True
     for repo in sorted(loras):
-        snapshot_download(repo, cache_dir=str(hub_cache), token=config.hf_token)
+        try:
+            snapshot_download(repo, cache_dir=str(hub_cache), token=config.hf_token)
+        except Exception as exc:  # noqa: BLE001 - degrade gracefully, never abort
+            all_ok = False
+            print(f"[prepare_inputs] adapter predownload failed for {repo}: {exc}",
+                  flush=True)
 
-    marker.write_text(key)
+    if all_ok:
+        marker.write_text(key)
     return layout

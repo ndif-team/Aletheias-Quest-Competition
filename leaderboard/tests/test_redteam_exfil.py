@@ -265,6 +265,29 @@ def test_prepare_inputs_predownloads_referenced_loras(tmp_path, monkeypatch):
     assert downloaded == ["aletheias-quest/a-mo-1"]   # deduped; None + bare skipped
 
 
+def test_prepare_inputs_survives_a_failed_adapter_predownload(tmp_path, monkeypatch):
+    """A failed adapter predownload degrades only that dataset — prepare_inputs must
+    not raise (other datasets still run), and it skips the marker so it retries."""
+    class FakeDS:
+        column_names = ["lora"]
+
+        def unique(self, col):
+            return ["aletheias-quest/broken-adapter"]
+
+    monkeypatch.setattr("datasets.load_dataset", lambda name, *a, **k: FakeDS())
+
+    def boom(repo, *a, **k):
+        raise OSError("[Errno 28] No space left on device")
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", boom)
+    cache = tmp_path / "cache"
+    cfg = RunnerConfig(
+        datasets=[DatasetConfig(name="NDIF/fake-eval", labels_uri=LABELS_URI)],
+        cache_dir=str(cache))
+    data.prepare_inputs(cfg)                       # must NOT raise
+    assert not (cache / ".prepared").exists()      # marker skipped -> retries next run
+
+
 def test_child_env_seeds_predownloaded_adapters_as_readonly_symlinks(tmp_path):
     """Per job, the child's HF hub cache is seeded with symlinks to the (shared,
     read-only) predownloaded adapters — a cache hit, so no re-download/large write —
