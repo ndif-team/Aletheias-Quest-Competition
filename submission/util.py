@@ -115,28 +115,35 @@ def load_model(dataset_name: str):
 
 
 def decoder_layers(model):
-    """The text decoder's transformer ``layers`` ModuleList, so a probe can read
-    ``decoder_layers(model)[L].output`` (the residual stream at layer L).
-
-    Found by searching the module tree rather than a hardcoded path: the nesting
-    depends on what NDIF served — a plain multimodal VLM (layers under
-    ``.model.language_model.layers``) or, with a LoRA/PEFT adapter, the text-only
-    CausalLM. The vision tower also has a ``layers`` ModuleList, so we require a
-    decoder-layer class (``self_attn`` + ``mlp``, name containing ``Decoder``)."""
+    """The text decoder's ``layers`` ModuleList: read ``decoder_layers(model)[L].output``
+    for the residual stream at layer L. Searched (not hardcoded) because both the
+    nesting and the block class vary with what NDIF served:
+      * plain text CausalLM   -> model.model.layers
+      * multimodal VLM        -> model.model.language_model.layers
+      * + a LoRA/PEFT adapter -> ``model.model`` IS the CausalLM, so ``layers`` sit one
+                                 level deeper (the old fallback did ``root.layers`` on
+                                 the CausalLM -> AttributeError ending at ``lm_head``).
+      * hybrid Mamba/MoE (Nemotron-H): blocks are ``NemotronHBlock`` with a ``mixer``
+                                 (no ``self_attn``/``mlp``, no 'Decoder' in the name).
+    So we match a transformer block STRUCTURALLY (any of self_attn / linear_attn /
+    mixer, or mlp+input_layernorm) and pick the LONGEST such ``layers`` stack — the LM
+    decoder, never the shorter vision tower (also excluded by a ``vision`` name check)."""
+    def is_block(m):
+        return (any(hasattr(m, a) for a in ("self_attn", "linear_attn", "mixer"))
+                or (hasattr(m, "mlp") and hasattr(m, "input_layernorm")))
     root = model.model
-    candidates = []
+    cands = []
     for name, child in root.named_modules():
-        if name.rsplit(".", 1)[-1] != "layers":
+        if name.rsplit(".", 1)[-1] != "layers" or "vision" in name.lower():
             continue
         kids = list(child.children())
-        if kids and hasattr(kids[0], "self_attn") and hasattr(kids[0], "mlp") \
-                and "Decoder" in type(kids[0]).__name__:
-            candidates.append((name, child))
-    if len(candidates) != 1:
-        # Fall back to the common nesting if the search is ambiguous.
-        inner = getattr(root, "language_model", root)
-        return inner.layers
-    return candidates[0][1]
+        if kids and any(is_block(k) for k in kids):
+            cands.append((len(kids), child))
+    if cands:
+        return max(cands, key=lambda c: c[0])[1]
+    # last-resort fallbacks for unusual nestings (descend into the CausalLM if needed)
+    inner = getattr(root, "language_model", root)
+    return inner.layers if hasattr(inner, "layers") else inner.model.layers
 
 
 # ── batched remote session ───────────────────────────────────────────────────
