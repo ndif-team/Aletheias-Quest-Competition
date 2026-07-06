@@ -85,10 +85,40 @@ def validate_submission(submission_root: Path) -> list[Path]:
     return notebooks
 
 
+def _budget_abort(team: str, notebook: str, dataset_key: str, config: RunnerConfig,
+                  deadline: float | None, cancel) -> ResultRecord | None:
+    """A terminating failure record if the submission must stop BEFORE the next run
+    — an operator cancel, or the overall wall-clock budget spent — else ``None``.
+
+    The whole point is to release the shared (serial) run slot: fail-fast turns this
+    one record into an aborted submission."""
+    if cancel is not None and cancel.cancelled:
+        return _exec_failure(team, notebook, dataset_key,
+                             "[run] submission cancelled by operator",
+                             redact=config.redact_errors)
+    if deadline is not None and time.monotonic() >= deadline:
+        return _exec_failure(
+            team, notebook, dataset_key,
+            f"[run] submission exceeded its overall time budget "
+            f"({config.submission_timeout}s)", redact=config.redact_errors)
+    return None
+
+
+def _run_timeout(config: RunnerConfig, deadline: float | None) -> int:
+    """This run's wall-clock budget: the per-run ``notebook_timeout``, clamped to the
+    submission's remaining overall budget so a single run can't overshoot the cap.
+    Only called after ``_budget_abort`` confirmed the deadline hasn't passed, so the
+    remaining budget is positive."""
+    if deadline is None:
+        return config.notebook_timeout
+    return max(1, min(config.notebook_timeout, int(deadline - time.monotonic())))
+
+
 def run_pipeline(submission_root: Path, team: str, config: RunnerConfig,
                  extra_env: dict[str, str] | None = None,
                  on_submission_csv: CsvSink | None = None,
-                 on_progress: Callable[[dict], None] | None = None) -> list[ResultRecord]:
+                 on_progress: Callable[[dict], None] | None = None,
+                 cancel=None) -> list[ResultRecord]:
     """Run an already-unpacked submission and score it. Never raises per-notebook;
     failures are recorded as ``ok=False`` records.
 
@@ -104,12 +134,13 @@ def run_pipeline(submission_root: Path, team: str, config: RunnerConfig,
     # One notebook per submission, fail fast (covers --dry, which calls straight in).
     validate_submission(submission_root)
     start = time.monotonic()
+    deadline = start + config.submission_timeout if config.submission_timeout else None
     if config.sandbox:
         records = _run_sandboxed(submission_root, team, config, extra_env,
-                                 on_submission_csv, on_progress)
+                                 on_submission_csv, on_progress, deadline, cancel)
     else:
         records = _run_in_process(submission_root, team, config, extra_env,
-                                  on_submission_csv, on_progress)
+                                  on_submission_csv, on_progress, deadline, cancel)
     elapsed = time.monotonic() - start
     for r in records:
         r.runtime_seconds = elapsed
@@ -131,7 +162,8 @@ def _score_record(team, notebook, ds, labels, submission_csv, partial=False):
 def _run_sandboxed(submission_root: Path, team: str, config: RunnerConfig,
                    extra_env: dict[str, str] | None,
                    on_submission_csv: CsvSink | None,
-                   on_progress: Callable[[dict], None] | None = None) -> list[ResultRecord]:
+                   on_progress: Callable[[dict], None] | None = None,
+                   deadline: float | None = None, cancel=None) -> list[ResultRecord]:
     from . import data, executor, sandbox
 
     layout = data.prepare_inputs(config)
@@ -146,7 +178,8 @@ def _run_sandboxed(submission_root: Path, team: str, config: RunnerConfig,
     # One scratch per request: venv, requirements install, and dataset-cache copy
     # are built once here and reused across every (dataset, notebook) run.
     with tempfile.TemporaryDirectory(prefix="aletheia-job-") as job:
-        ctx, setup_err = sandbox.setup_job(submission_root, layout, Path(job), config)
+        ctx, setup_err = sandbox.setup_job(submission_root, layout, Path(job), config,
+                                           cancel=cancel)
         if setup_err is not None:
             # venv/pip failure applies to the whole submission — record it for
             # every (dataset, notebook) so each row reflects the same cause.
@@ -164,13 +197,21 @@ def _run_sandboxed(submission_root: Path, team: str, config: RunnerConfig,
         for rel in rels:
             for ds in config.datasets:
                 done += 1
+                # Stop before starting another run if cancelled or the overall
+                # budget is spent — releasing the shared run slot.
+                abort = _budget_abort(team, rel, ds.key, config, deadline, cancel)
+                if abort is not None:
+                    records.append(abort)
+                    return records
                 if on_progress:
                     on_progress({"phase": "start", "dataset": ds.key,
                                  "index": done, "total": total})
                 if ds.key not in labels_cache:
                     labels_cache[ds.key] = scoring.load_labels(ds, config.hf_token)
                 labels = labels_cache[ds.key]
-                res = sandbox.run_notebook(ctx, rel, ds, config, extra_env=extra_env)
+                res = sandbox.run_notebook(ctx, rel, ds, config, extra_env=extra_env,
+                                           timeout=_run_timeout(config, deadline),
+                                           cancel=cancel)
                 if not res.ok:
                     records.append(_exec_failure(
                         team, rel, ds.key,
@@ -195,7 +236,8 @@ def _run_sandboxed(submission_root: Path, team: str, config: RunnerConfig,
 def _run_in_process(submission_root: Path, team: str, config: RunnerConfig,
                     extra_env: dict[str, str] | None,
                     on_submission_csv: CsvSink | None,
-                    on_progress: Callable[[dict], None] | None = None) -> list[ResultRecord]:
+                    on_progress: Callable[[dict], None] | None = None,
+                    deadline: float | None = None, cancel=None) -> list[ResultRecord]:
     records: list[ResultRecord] = []
     base_env = config.base_env()
     notebooks = executor.list_notebooks(submission_root)
@@ -212,6 +254,11 @@ def _run_in_process(submission_root: Path, team: str, config: RunnerConfig,
         for nb in notebooks:
             for ds in config.datasets:
                 done += 1
+                rel = nb.relative_to(submission_root).as_posix()
+                abort = _budget_abort(team, rel, ds.key, config, deadline, cancel)
+                if abort is not None:
+                    records.append(abort)
+                    return records
                 if on_progress:
                     on_progress({"phase": "start", "dataset": ds.key,
                                  "index": done, "total": total})
@@ -220,7 +267,7 @@ def _run_in_process(submission_root: Path, team: str, config: RunnerConfig,
                 labels = labels_cache[ds.key]
                 env = {**base_env, **ds.env(), **(extra_env or {})}
                 nbr = executor.run_notebook(nb, submission_root, env,
-                                            config.notebook_timeout, Path(snap))
+                                            _run_timeout(config, deadline), Path(snap))
                 if not nbr.ok:
                     records.append(_exec_failure(team, nbr.notebook, ds.key,
                                                  nbr.error, redact=config.redact_errors))

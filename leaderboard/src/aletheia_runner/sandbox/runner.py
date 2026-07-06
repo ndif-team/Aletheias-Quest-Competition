@@ -35,9 +35,122 @@ SUBMISSION_FILENAME = "submission.csv"
 
 # Fixed resource caps. The configurable limits (CPU time, memory, wall clock)
 # come from RunnerConfig.
-_RLIMIT_NPROC = 1024
+# NOTE: RLIMIT_NPROC is intentionally NOT capped. It's a per-UID limit (shared
+# across all concurrent runs + the parent), so a low cap made rayon/tokenizers
+# fail to spawn their thread pool under load with EAGAIN ("Resource temporarily
+# unavailable" -> "global thread pool has not been initialized"). Thread/process
+# growth is bounded instead by RLIMIT_AS (memory) and the wall-clock timeout.
 _RLIMIT_FSIZE = 2 * 1024**3
 _RLIMIT_NOFILE = 4096
+
+# Once a run's process tree is SIGKILLed, the write ends of the stdout pipe close
+# and the reaping ``communicate()`` returns promptly. This only bounds the
+# pathological tail (a descendant we couldn't reap, e.g. stuck in uninterruptible
+# sleep) so a stuck run can never hold the (serial) submission slot forever.
+_REAP_GRACE = 30
+
+
+def _proc_ppids() -> dict[int, int]:
+    """Map ``pid -> ppid`` for every live process by scanning ``/proc`` (Linux).
+
+    Returns ``{}`` on platforms without ``/proc`` (e.g. a macOS ``--dry``), where
+    the process-group kill is the only reaping mechanism."""
+    ppids: dict[int, int] = {}
+    try:
+        entries = list(Path("/proc").iterdir())
+    except OSError:
+        return ppids
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = (entry / "stat").read_bytes()
+        except OSError:
+            continue
+        # "pid (comm) state ppid ...": comm may contain spaces and parentheses, so
+        # parse the fields after the final ')'.
+        try:
+            fields = stat[stat.rindex(b")") + 2:].split()
+            ppids[int(entry.name)] = int(fields[1])
+        except (ValueError, IndexError):
+            continue
+    return ppids
+
+
+def _descendants(pid: int) -> list[int]:
+    """Every descendant pid of ``pid`` (excluding ``pid`` itself), via a /proc walk."""
+    children: dict[int, list[int]] = {}
+    for child, parent in _proc_ppids().items():
+        children.setdefault(parent, []).append(child)
+    out: list[int] = []
+    stack = list(children.get(pid, []))
+    while stack:
+        p = stack.pop()
+        out.append(p)
+        stack.extend(children.get(p, []))
+    return out
+
+
+def _kill_tree(pid: int) -> None:
+    """SIGKILL a process, its process group, and its entire descendant tree.
+
+    The sandboxed child is a session leader (``start_new_session=True``), so a
+    ``killpg`` reaps its group — but nbclient launches the Jupyter kernel in its
+    OWN session, which escapes that group. Left alive, the orphaned kernel keeps
+    the inherited stdout pipe open (wedging the reaping ``communicate()``) and keeps
+    tracing on NDIF. Snapshot the descendant tree from /proc FIRST — while the ppid
+    links are still intact, since once the parent dies its children reparent to init
+    and the chain is lost — then signal the group and every descendant."""
+    descendants = _descendants(pid)
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGKILL)
+    except OSError:                       # already gone / no such group
+        pass
+    for p in (pid, *descendants):
+        try:
+            os.kill(p, signal.SIGKILL)
+        except OSError:                  # already reaped / not ours
+            pass
+
+
+class Canceller:
+    """Cooperative cancellation for a submission's sandboxed runs.
+
+    A submission runs its subprocesses in sequence (pip install, then one child per
+    ``(notebook, dataset)``); at most one is live at a time. ``register`` records the
+    live child so ``cancel`` — called from another thread (e.g. an admin endpoint) —
+    can SIGKILL its whole tree immediately, which makes the run's ``communicate``
+    return. A cancel that arrives between runs is latched: the next ``register`` kills
+    on arrival and the pipeline loop's ``cancelled`` check stops it starting more."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._proc: subprocess.Popen | None = None
+        self._cancelled = False
+
+    def register(self, proc: subprocess.Popen) -> None:
+        with self._lock:
+            if not self._cancelled:
+                self._proc = proc
+                return
+        _kill_tree(proc.pid)             # cancelled before we started -> kill now
+
+    def unregister(self, proc: subprocess.Popen) -> None:
+        with self._lock:
+            if self._proc is proc:
+                self._proc = None
+
+    def cancel(self) -> None:
+        with self._lock:
+            self._cancelled = True
+            proc = self._proc
+        if proc is not None:
+            _kill_tree(proc.pid)
+
+    @property
+    def cancelled(self) -> bool:
+        with self._lock:
+            return self._cancelled
 
 
 @dataclass
@@ -70,7 +183,6 @@ def _make_preexec(cpu_limit: int, mem_bytes: int | None,
                 lim(resource.RLIMIT_CPU, cpu_limit, cpu_limit + 10)
             lim(resource.RLIMIT_FSIZE, _RLIMIT_FSIZE)
             lim(resource.RLIMIT_NOFILE, _RLIMIT_NOFILE)
-            lim(resource.RLIMIT_NPROC, _RLIMIT_NPROC)
             if mem_bytes:
                 lim(resource.RLIMIT_AS, mem_bytes)
         if sb is not None:
@@ -86,7 +198,7 @@ def _make_preexec(cpu_limit: int, mem_bytes: int | None,
 
 
 def _run(cmd, env, cwd, *, cpu_limit, mem_bytes, sb, allow_suffixes, timeout,
-         enable_seccomp, apply_rlimits, mitm_suffixes=None) -> tuple[int, str]:
+         enable_seccomp, apply_rlimits, mitm_suffixes=None, cancel=None) -> tuple[int, str]:
     """Run a sandboxed subprocess in its own session; kill the group on timeout.
 
     When ``allow_suffixes`` is given, egress is restricted by **hostname**: a
@@ -133,17 +245,34 @@ def _run(cmd, env, cwd, *, cpu_limit, mem_bytes, sb, allow_suffixes, timeout,
         text=True)
     if csock is not None:
         csock.close()  # parent keeps only psock
+    # Make the live child cancellable: an operator ``cancel`` from another thread
+    # SIGKILLs its whole tree, which unblocks the ``communicate`` below.
+    if cancel is not None:
+        cancel.register(proc)
     try:
         out, _ = proc.communicate(timeout=timeout)
         rc = proc.returncode
+        if cancel is not None and cancel.cancelled:
+            rc = 125
+            out = "cancelled by operator" + (f"\n{out}" if out else "")
     except subprocess.TimeoutExpired:
+        # Kill the whole tree (not just the group — the kernel escapes it) so the
+        # reaping communicate() can't hang on an orphan holding the pipe, and bound
+        # that reap so the slot is released even if a descendant survives the kill.
+        _kill_tree(proc.pid)
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        proc.communicate()
-        rc, out = 124, f"timed out after {timeout}s"
+            out, _ = proc.communicate(timeout=_REAP_GRACE)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            out = ""
+        rc = 124
+        out = f"timed out after {timeout}s" + (f"\n{out}" if out else "")
     finally:
+        if cancel is not None:
+            cancel.unregister(proc)
         stop.set()
         if psock is not None:
             psock.close()
@@ -196,6 +325,7 @@ def setup_job(
     data_layout: DataLayout,
     scratch: Path,
     config: RunnerConfig,
+    cancel: "Canceller | None" = None,
 ) -> tuple[JobContext | None, SandboxResult | None]:
     """Build the per-request sandbox: copy the submission, create the venv, copy
     the dataset cache, and install requirements — all once. Returns
@@ -255,7 +385,7 @@ def setup_job(
         code, out = _run(
             [str(venv / "bin" / "python"), "-m", "pip", "install", "-r",
              "submission/requirements.txt"],
-            env, work, allow_suffixes=install_allow, **common)
+            env, work, allow_suffixes=install_allow, cancel=cancel, **common)
         if code != 0:
             return None, SandboxResult(False, error=f"pip install failed:\n{out[-1500:]}",
                                        phase="install")
@@ -271,6 +401,8 @@ def run_notebook(
     config: RunnerConfig,
     *,
     extra_env: dict[str, str] | None = None,
+    timeout: int | None = None,
+    cancel: "Canceller | None" = None,
 ) -> SandboxResult:
     """Run one notebook against one dataset inside an already-prepared job.
 
@@ -289,10 +421,16 @@ def run_notebook(
     run_env = {**ctx.base_env, **dataset_cfg.env(), **(extra_env or {})}
     if config.ndif_host:                      # point nnsight at the configured cluster
         run_env["NDIF_HOST"] = config.ndif_host
+    # ``timeout`` clamps this run to the submission's remaining overall budget; the
+    # CPU-time backstop tracks it. Fall back to the job's configured per-run budget.
+    common = dict(ctx.common)
+    if timeout is not None:
+        common["timeout"] = timeout
+        common["cpu_limit"] = timeout
     code, out = _run(
         [str(ctx.venv / "bin" / "python"), entry, notebook_rel],
         run_env, work, allow_suffixes=ctx.run_allow, mitm_suffixes=ctx.run_mitm,
-        **ctx.common)
+        cancel=cancel, **common)
     if code != 0:
         # Keep a generous tail of the output: this becomes the organizer-only
         # ``error_detail`` (persisted to the bucket), so we want the full traceback,

@@ -5,6 +5,6 @@ Confinement primitives (`landlock`, `seccomp`, `egress`), the per-job orchestrat
 prober (`probe`). (Dataset predownload lives in the parent-level `data` module.)
 """
 
-from .runner import JobContext, SandboxResult, run_notebook, setup_job
+from .runner import Canceller, JobContext, SandboxResult, run_notebook, setup_job
 
-__all__ = ["JobContext", "SandboxResult", "run_notebook", "setup_job"]
+__all__ = ["Canceller", "JobContext", "SandboxResult", "run_notebook", "setup_job"]

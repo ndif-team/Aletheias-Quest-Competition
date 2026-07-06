@@ -163,6 +163,13 @@ class RunnerConfig:
     # sandbox kills the run's process group when it's exceeded; there is no separate
     # per-cell timeout.
     notebook_timeout: int = 1800
+    # Overall wall-clock budget (seconds) for a whole submission — a backstop ABOVE
+    # the per-(notebook, dataset) ``notebook_timeout``. The submission (serial) run
+    # slot is shared across all teams, so a run that the per-run kill can't reclaim,
+    # or one with many datasets, must still release the slot in bounded time: the
+    # pipeline clamps each run to the remaining budget and stops once it's spent.
+    # 0 disables it (unbounded, the historical behavior).
+    submission_timeout: int = 0
     # Sandboxed execution (Landlock + seccomp + rlimits + predownloaded RO data).
     sandbox: bool = False
     confine: bool = True            # apply Landlock/seccomp/egress/rlimits (False for --dry)
@@ -203,6 +210,10 @@ class RunnerConfig:
     # usable tier (ndif.USABLE_TIER). Sourced from the LEADERBOARD_NDIF_API_KEY
     # env var (an HF Space secret); never set in the committed config.
     leaderboard_ndif_api_key: str | None = None
+    # Bearer token for the operator-only admin endpoints (list / cancel in-flight
+    # runs). Sourced from the ADMIN_TOKEN env var (an HF Space secret); never set in
+    # the committed config. Unset -> the admin endpoints are disabled (404).
+    admin_token: str | None = None
 
     def dataset_label_map(self) -> dict[str, str]:
         """Map each configured dataset key to its public codename (``dataset_label``).
@@ -242,4 +253,5 @@ class RunnerConfig:
             leaderboard_ndif_api_key=(
                 self.leaderboard_ndif_api_key
                 or os.environ.get("LEADERBOARD_NDIF_API_KEY")),
+            admin_token=self.admin_token or os.environ.get("ADMIN_TOKEN"),
         )
