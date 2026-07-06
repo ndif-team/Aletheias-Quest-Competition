@@ -105,3 +105,11 @@ datasets:
     labels_uri: aletheias-quest/dev-varied-deception-Qwen3.5-27B-c-mo-qwen3.5-27b-labels
     id_column: index
     label_column: deceptive
+  - name: aletheias-quest/dev-instructed-deception-Qwen3.5-27B-g-st-qwen3.5-27b
+    labels_uri: aletheias-quest/dev-instructed-deception-Qwen3.5-27B-g-st-qwen3.5-27b-labels
+    id_column: index
+    label_column: deceptive
+  - name: aletheias-quest/dev-instructed-deception-gemma-3-27b-it-g-st-gemma-3-27b-it-2
+    labels_uri: aletheias-quest/dev-instructed-deception-gemma-3-27b-it-g-st-gemma-3-27b-it-2-labels
+    id_column: index
+    label_column: deceptive
