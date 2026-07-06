@@ -18,19 +18,29 @@ RUN pip install --no-cache-dir ".[space]" \
 # Pre-install the competition's required heavy deps (CPU torch + nnsight) so
 # participant notebooks inherit them via the per-job venv (--system-site-packages)
 # instead of reinstalling ~1GB per job. Heavy compute still runs remotely on NDIF.
-# transformers is pinned: nnsight resolves the model architecture locally (meta
-# weights) before tracing, so the version must recognise the traced models. 5.10.1
-# maps gemma3 for image-text-to-text; leaving it unpinned drifts to a build that
-# raises "Unrecognized model" for google/gemma-3-*.
+# transformers is pinned to a release: nnsight resolves the model architecture
+# locally on meta before tracing, so the version must recognise the traced models.
+# 5.12.1 recognises Nemotron-3-Super-120B / Qwen3.5-27B / gemma-3-27b-it (verified
+# via `--dry`). NOTE: the soft-trigger LoRA-on-sharded-120B failure was NOT a
+# transformers issue and NOT fixed by transformers main (main's WeightConverter also
+# lacks the kwarg) — it's peft: keep the NDIF *workers* on peft<0.19 (peft 0.19.x
+# calls transformers' WeightConverter with a distributed_operation kwarg no
+# transformers release or main accepts). The WeightConverter fix itself lives on the
+# workers (the client only resolves on meta; the workers do the remote weight loading),
+# but we pin the client to peft<0.19 too so client and workers stay on the same peft line.
 # nnsight is pinned to the competition's hackathon branch (PEFT/LoRA remote support
-# + the hackathon NDIF cluster). NOTE: this branch may change before the start.
+# + the hackathon NDIF cluster). Pinned to an explicit commit SHA (the HEAD of
+# hackathon/peft as of this deploy) rather than the bare branch name: it guarantees
+# the newest commit is installed AND changes this line so the Docker layer cache is
+# busted on rebuild (a bare @hackathon/peft could otherwise be served from a stale
+# cached layer). Re-pin to the branch's new HEAD to pull later updates.
 # git + a C toolchain: the hackathon/peft branch builds a C extension
 # (nnsight._c.py_mount) from source, so it needs gcc + headers (build-essential).
 RUN apt-get update && apt-get install -y --no-install-recommends git build-essential \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch torchvision \
-    && pip install --no-cache-dir "transformers==5.10.1" peft \
-       "nnsight @ git+https://github.com/ndif-team/nnsight.git@hackathon/peft"
+    && pip install --no-cache-dir "transformers==5.12.1" "peft<0.19" \
+       "nnsight @ git+https://github.com/ndif-team/nnsight.git@e4f37fa3e7c6bb936b4a37e2b5402dca2330610c"
 
 # RESULTS_URI is left unset so runner.yaml's bucket:// results store is used.
 # (Set RESULTS_URI=/data/results.jsonl + attach a volume to use local storage instead.)
