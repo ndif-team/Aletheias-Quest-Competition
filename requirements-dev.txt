@@ -17,9 +17,10 @@
 nnsight @ git+https://github.com/ndif-team/nnsight.git@hackathon/peft
 
 # Model + data stack (the leaderboard base image ships torch CPU; install a CUDA
-# build yourself if you want to develop on a local GPU).
+# build yourself if you want to develop on a local GPU). transformers is pinned to
+# match the Space base image so a `--dry` rehearsal mirrors the Space.
 torch
-transformers
+transformers==5.12.1
 datasets
 huggingface_hub
 
