@@ -15,6 +15,7 @@ import asyncio
 import datetime
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -24,7 +25,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 
 from . import ndif, pipeline
 from .archive import SubmissionArchive
@@ -163,6 +164,20 @@ def create_app(config: RunnerConfig, store: BaseResultStore,
     # In-flight submissions per team (queued or running). Mutated only on the event
     # loop, so a plain dict is safe; read by /api/me.
     pending: dict[str, int] = {}
+    # In-flight runs by id, for the operator-only admin endpoints. Each carries a
+    # Canceller whose .cancel() SIGKILLs the run's live subprocess tree from another
+    # thread (the run itself executes in a threadpool worker). Mutated only on the
+    # event loop; the Canceller is thread-safe.
+    from .sandbox import Canceller
+    runs: dict[int, dict] = {}
+    run_seq = {"n": 0}
+
+    def _require_admin(token: str | None) -> None:
+        import hmac
+        if not config.admin_token:
+            raise HTTPException(404, "not found")   # feature disabled -> don't advertise it
+        if not token or not hmac.compare_digest(token, config.admin_token):
+            raise HTTPException(403, "forbidden")
 
     # Public dataset codenames ("Dataset <Greek deity>"). Real names are private and
     # must never appear in a response; ``label`` maps any key to its stable codename
@@ -204,6 +219,33 @@ def create_app(config: RunnerConfig, store: BaseResultStore,
         # Public codenames only — never the real dataset names.
         return {"ok": True, "datasets": list(config.dataset_label_map().values())}
 
+    @app.get("/admin/runs")
+    def admin_runs(x_admin_token: str | None = Header(default=None,
+                                                     alias="X-Admin-Token")) -> dict:
+        """List in-flight runs (operator only). Requires ``X-Admin-Token`` matching
+        the configured ``ADMIN_TOKEN``; disabled (404) when no token is set."""
+        _require_admin(x_admin_token)
+        return {"runs": [{"id": r["id"], "team": r["team"],
+                          "started_at": r["started_at"],
+                          "cancelled": r["canceller"].cancelled}
+                         for r in runs.values()]}
+
+    @app.post("/admin/cancel")
+    def admin_cancel(run_id: int | None = None, cancel_all: bool = False,
+                     x_admin_token: str | None = Header(default=None,
+                                                       alias="X-Admin-Token")) -> dict:
+        """Cancel an in-flight run by ``run_id`` (or every run with ``cancel_all=true``).
+
+        SIGKILLs the run's live subprocess tree so a wedged run releases the shared
+        (serial) submission slot immediately, without restarting the Space. The run
+        is then recorded as a failed submission. Operator only (see ``/admin/runs``)."""
+        _require_admin(x_admin_token)
+        targets = (list(runs.values()) if cancel_all
+                   else [r for r in runs.values() if r["id"] == run_id])
+        for r in targets:
+            r["canceller"].cancel()
+        return {"cancelled": [r["id"] for r in targets]}
+
     @app.get("/api/sandbox-probe")
     def sandbox_probe() -> dict:
         """Report which unprivileged sandboxing primitives work in this env."""
@@ -226,6 +268,126 @@ def create_app(config: RunnerConfig, store: BaseResultStore,
         except (json.JSONDecodeError, IndexError):
             raise HTTPException(500, f"selftest failed: {proc.stderr[:1000]}")
 
+    def _build_payload(records: list, team: str) -> dict:
+        """Participant-facing result payload: per-notebook mean metrics + anonymized
+        per-dataset breakdown. Shared by the JSON response and the stream's terminal
+        ``result`` event (both give the submitter their own final scores)."""
+        by_nb: dict[str, list] = {}
+        for r in records:
+            by_nb.setdefault(r.notebook, []).append(r)
+        results_out, scores, failures = [], {}, []
+        for nb, recs in by_nb.items():
+            name = nb.split("/")[-1]
+            summ = summarize_submission(recs)
+            if summ["ok"]:
+                scores[name] = summ["metrics"].get(PRIMARY_METRIC)
+                results_out.append(_anonymize({
+                    "notebook": name, "ok": True, "metrics": summ["metrics"],
+                    "datasets": summ["datasets"],
+                    "runtime_seconds": summ["runtime_seconds"]}, label))
+            else:
+                fail = _anonymize({"notebook": name, "dataset": summ["failed_dataset"],
+                                   "error": summ["error"]}, label)
+                failures.append(fail)
+                results_out.append({**fail, "ok": False})
+        return {"team": team, "primary": PRIMARY_METRIC, "results": results_out,
+                "scores": scores, "failures": failures,
+                "message": (f"scored {len(scores)} notebook(s)"
+                            + (f", {len(failures)} failed" if failures else ""))}
+
+    async def _finalize(records: list, method_tag: str | None) -> None:
+        """Stamp records (submitted_at + tag), persist them, refresh the board cache."""
+        stamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        tag = _normalize_tag(method_tag)
+        for r in records:
+            r.submitted_at = stamp
+            r.tag = tag
+        async with bucket_lock:
+            await run_in_threadpool(store.append, records)
+        lb_cache.invalidate()
+
+    def _sse(event: str, **data) -> bytes:
+        return f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
+
+    async def _submit_stream(root, team, extra_env, csv_sink, method_tag,
+                             run_id, canceller, tmp):
+        """SSE body for a streaming submission (``Accept: text/event-stream``).
+
+        Emits ``received`` → ``queued`` (queue depth) → ``running`` → per-dataset
+        ``dataset`` progress (public codename + ok/fail ONLY — never scores or raw
+        errors) → terminal ``result`` (same payload as the JSON path) or ``error``.
+
+        The submission semaphore is held by the *worker task*, not this generator, so
+        a client that disconnects mid-stream can't release the slot early: the run
+        finishes server-side (results still persisted) and teardown is deferred until
+        it does."""
+        RUNNING, DONE = object(), object()
+        task = None
+
+        def _teardown(*_):
+            runs.pop(run_id, None)
+            pending[team] = pending.get(team, 1) - 1
+            if pending[team] <= 0:
+                pending.pop(team, None)
+            shutil.rmtree(tmp, ignore_errors=True)
+
+        try:
+            yield _sse("received", run_id=run_id, team=team,
+                       total=len(config.datasets))
+            yield _sse("queued", ahead=sum(1 for r in runs.values()
+                                           if r["id"] < run_id))
+            q: asyncio.Queue = asyncio.Queue()
+            loop = asyncio.get_running_loop()
+
+            def on_progress(ev: dict) -> None:      # runs on the worker thread
+                out = {"phase": ev.get("phase"), "index": ev.get("index"),
+                       "total": ev.get("total"), "dataset": label(ev.get("dataset"))}
+                if ev.get("phase") == "done":
+                    out["ok"] = bool(ev.get("ok"))
+                loop.call_soon_threadsafe(q.put_nowait, ("dataset", out))
+
+            async def _worker():
+                try:
+                    async with submit_slots:                 # slot held for the run
+                        loop.call_soon_threadsafe(q.put_nowait, (RUNNING, None))
+                        records = await run_in_threadpool(
+                            pipeline.run_pipeline, root, team, config,
+                            extra_env, csv_sink, on_progress, canceller)
+                    await _finalize(records, method_tag)     # persist regardless of client
+                    return records
+                finally:
+                    loop.call_soon_threadsafe(q.put_nowait, (DONE, None))
+
+            task = asyncio.create_task(_worker())
+            while True:
+                kind, payload = await q.get()
+                if kind is DONE:
+                    break
+                if kind is RUNNING:
+                    yield _sse("running")
+                else:
+                    yield _sse("dataset", **payload)
+            try:
+                records = await task
+            except (FileNotFoundError, ValueError) as e:
+                yield _sse("error", message=_redact_dataset_names(
+                    f"invalid submission: {e}", config))
+                return
+            yield _sse("result", **_build_payload(records, team))
+        except Exception as e:  # noqa: BLE001  (GeneratorExit/disconnect passes through)
+            print(f"[submit] stream failed for {team!r}: {e}", file=sys.stderr, flush=True)
+            try:
+                yield _sse("error", message="internal error while running your submission")
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            # Normal end: task is done -> tear down now. Client disconnect mid-run:
+            # task still going -> let it finish + persist, tear down on completion.
+            if task is not None and not task.done():
+                task.add_done_callback(_teardown)
+            else:
+                _teardown()
+
     @app.post("/submit")
     async def submit(team: str = Form(default=""), file: UploadFile = File(...),
                      ndif_api_key: str | None = Header(default=None,
@@ -235,7 +397,11 @@ def create_app(config: RunnerConfig, store: BaseResultStore,
                      row_limit: str | None = Header(default=None,
                                                     alias="X-Aletheia-Limit"),
                      method_tag: str | None = Header(default=None,
-                                                     alias="X-Aletheia-Tag")) -> dict:
+                                                     alias="X-Aletheia-Tag"),
+                     accept: str | None = Header(default=None, alias="Accept")):
+        """Run + score a submission. Returns one JSON body by default; a client that
+        sends ``Accept: text/event-stream`` gets a live SSE progress stream instead
+        (same run, redacted progress). Clients that don't send it are unaffected."""
         if not config.datasets:
             raise HTTPException(503, "runner has no datasets configured")
         if not ndif_api_key:
@@ -284,10 +450,14 @@ def create_app(config: RunnerConfig, store: BaseResultStore,
 
         when = datetime.datetime.now(datetime.timezone.utc)
 
-        with tempfile.TemporaryDirectory(prefix="aletheia-upload-") as tmp:
-            zpath = Path(tmp) / "submission.zip"
+        # Persistent scratch (NOT a `with` block): on the streaming path the run
+        # outlives this handler, so the SSE generator owns teardown of `tmp`.
+        tmp = Path(tempfile.mkdtemp(prefix="aletheia-upload-"))
+        stream_owns_cleanup = False
+        try:
+            zpath = tmp / "submission.zip"
             zpath.write_bytes(data)
-            root = Path(tmp) / "unpacked"
+            root = tmp / "unpacked"
 
             # Validate the submission's STRUCTURE before charging a rate-limit
             # attempt: it must unpack and contain exactly one notebook. A
@@ -351,66 +521,50 @@ def create_app(config: RunnerConfig, store: BaseResultStore,
                     except ValueError:
                         pass
 
+                run_seq["n"] += 1
+                run_id = run_seq["n"]
+                canceller = Canceller()
+                runs[run_id] = {"id": run_id, "team": team,
+                                "started_at": when.isoformat(), "canceller": canceller}
+
+                # A client that asked for a stream gets the SSE body; the generator
+                # takes over teardown (pending / runs / tmp) since the run outlives
+                # this coroutine. Everyone else keeps the single-JSON behavior.
+                if accept and "text/event-stream" in accept.lower():
+                    stream_owns_cleanup = True
+                    return StreamingResponse(
+                        _submit_stream(root, team, extra_env, csv_sink, method_tag,
+                                       run_id, canceller, tmp),
+                        media_type="text/event-stream",
+                        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+                # ---- default JSON path: run to completion, return one body ----
                 # The run is heavy (venv, pip, notebook execution, NDIF traces). Run it
                 # off the event loop in a worker thread, bounded by the semaphore: a
-                # burst of submissions queues here (the loop stays free to serve the
-                # leaderboard/health endpoints) and at most MAX_CONCURRENT_SUBMISSIONS
+                # burst of submissions queues here and at most MAX_CONCURRENT_SUBMISSIONS
                 # run at once. The submission was already unpacked + validated above.
-                async with submit_slots:
-                    try:
-                        records = await run_in_threadpool(
-                            pipeline.run_pipeline, root, team, config,
-                            extra_env, csv_sink)
-                    except (FileNotFoundError, ValueError) as e:
-                        raise HTTPException(
-                            400, _redact_dataset_names(f"invalid submission: {e}", config))
+                try:
+                    async with submit_slots:
+                        try:
+                            records = await run_in_threadpool(
+                                pipeline.run_pipeline, root, team, config,
+                                extra_env, csv_sink, None, canceller)
+                        except (FileNotFoundError, ValueError) as e:
+                            raise HTTPException(
+                                400, _redact_dataset_names(f"invalid submission: {e}", config))
+                finally:
+                    runs.pop(run_id, None)
 
-                stamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
-                tag = _normalize_tag(method_tag)
-                for r in records:
-                    r.submitted_at = stamp
-                    r.tag = tag
-                async with bucket_lock:
-                    await run_in_threadpool(store.append, records)
-                lb_cache.invalidate()
-
-                # Report per notebook: all four metrics (mean across datasets) + the
-                # per-dataset breakdown + runtime. ``scores`` keeps the primary metric
-                # keyed by notebook for older clients.
-                by_nb: dict[str, list] = {}
-                for r in records:
-                    by_nb.setdefault(r.notebook, []).append(r)
-                results_out, scores, failures = [], {}, []
-                for nb, recs in by_nb.items():
-                    name = nb.split("/")[-1]
-                    summ = summarize_submission(recs)
-                    if summ["ok"]:
-                        scores[name] = summ["metrics"].get(PRIMARY_METRIC)
-                        results_out.append(_anonymize({
-                            "notebook": name, "ok": True, "metrics": summ["metrics"],
-                            "datasets": summ["datasets"],
-                            "runtime_seconds": summ["runtime_seconds"]}, label))
-                    else:
-                        # Anonymize the failing dataset for the participant-facing
-                        # response; the real key stays in the persisted records.
-                        fail = _anonymize({"notebook": name,
-                                           "dataset": summ["failed_dataset"],
-                                           "error": summ["error"]}, label)
-                        failures.append(fail)
-                        results_out.append({**fail, "ok": False})
-                return {
-                    "team": team,
-                    "primary": PRIMARY_METRIC,
-                    "results": results_out,
-                    "scores": scores,
-                    "failures": failures,
-                    "message": (f"scored {len(scores)} notebook(s)"
-                                + (f", {len(failures)} failed" if failures else "")),
-                }
+                await _finalize(records, method_tag)
+                return _build_payload(records, team)
             finally:
-                pending[team] = pending.get(team, 1) - 1
-                if pending[team] <= 0:
-                    pending.pop(team, None)
+                if not stream_owns_cleanup:
+                    pending[team] = pending.get(team, 1) - 1
+                    if pending[team] <= 0:
+                        pending.pop(team, None)
+        finally:
+            if not stream_owns_cleanup:
+                shutil.rmtree(tmp, ignore_errors=True)
 
     return app
 

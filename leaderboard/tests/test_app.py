@@ -1,4 +1,5 @@
 import io
+import json
 import zipfile
 from pathlib import Path
 
@@ -85,6 +86,94 @@ def test_method_tag_recorded_normalized_and_on_desk(client):
     assert _post_tagged(client, team="ut", key="key-x", tag="green").status_code == 200
     me2 = client.post("/api/me", headers={"X-NDIF-API-Key": "key-x"}).json()
     assert me2["submissions"][0]["tag"] is None
+
+
+def test_admin_endpoints_disabled_without_token(client):
+    # No admin_token configured on the fixture -> endpoints are hidden (404), even
+    # when a token is supplied, so their existence isn't advertised.
+    assert client.get("/admin/runs", headers={"X-Admin-Token": "x"}).status_code == 404
+    assert client.post("/admin/cancel", headers={"X-Admin-Token": "x"}).status_code == 404
+
+
+def _admin_client(tmp_path):
+    cfg = RunnerConfig(
+        datasets=[DatasetConfig(name="dummy", labels_uri=str(FIXTURES / "labels.csv"))],
+        admin_token="s3cr3t")
+    store = ResultStore(str(tmp_path / "results.jsonl"))
+    registry = TeamRegistry(str(tmp_path / "teams.json"))
+    return TestClient(create_app(cfg, store, registry))
+
+
+def test_admin_requires_valid_token(tmp_path):
+    client = _admin_client(tmp_path)
+    assert client.get("/admin/runs").status_code == 403                       # none
+    assert client.get("/admin/runs",
+                      headers={"X-Admin-Token": "nope"}).status_code == 403   # wrong
+    r = client.get("/admin/runs", headers={"X-Admin-Token": "s3cr3t"})
+    assert r.status_code == 200 and r.json() == {"runs": []}
+
+
+def test_admin_cancel_unknown_run_is_noop(tmp_path):
+    client = _admin_client(tmp_path)
+    r = client.post("/admin/cancel?run_id=999", headers={"X-Admin-Token": "s3cr3t"})
+    assert r.status_code == 200 and r.json() == {"cancelled": []}
+
+
+def _parse_sse(lines):
+    """Collect (event, data-dict) frames from an SSE line iterator."""
+    events, ev, data = [], None, []
+    for raw in lines:
+        line = raw.decode() if isinstance(raw, (bytes, bytearray)) else raw
+        if line == "":
+            if ev is not None:
+                events.append((ev, json.loads("\n".join(data)) if data else {}))
+            ev, data = None, []
+        elif line.startswith("event:"):
+            ev = line[len("event:"):].strip()
+        elif line.startswith("data:"):
+            data.append(line[len("data:"):].strip())
+    if ev is not None:
+        events.append((ev, json.loads("\n".join(data)) if data else {}))
+    return events
+
+
+def test_submit_streams_progress_when_accept_sse(client):
+    with client.stream(
+            "POST", "/submit", data={"team": "team-s"},
+            files={"file": ("s.zip", _zip_with_fixture(), "application/zip")},
+            headers={"X-NDIF-API-Key": "key-s", "Accept": "text/event-stream"}) as r:
+        assert r.status_code == 200
+        assert "text/event-stream" in r.headers["content-type"]
+        events = _parse_sse(r.iter_lines())
+
+    kinds = [e for e, _ in events]
+    assert kinds[0] == "received"                       # lifecycle order
+    assert "queued" in kinds and "running" in kinds
+    assert "dataset" in kinds
+    assert kinds[-1] == "result"
+
+    payload = json.dumps(events)
+    assert "dummy" not in payload                       # real dataset name never leaks
+    for ev, data in events:
+        if ev == "dataset":
+            # codename only, ok/fail only — no scores in progress
+            assert data["dataset"] == dataset_label("dummy")
+            assert "metrics" not in data
+            assert "balanced_accuracy" not in json.dumps(data)
+
+    result = next(d for e, d in events if e == "result")
+    assert result["scores"]["fixture.ipynb"] == 1.0     # terminal event still has scores
+    # And it still landed on the leaderboard (persisted like the JSON path).
+    board = client.get("/api/leaderboard").json()["results"]
+    assert any(row["team"] == "team-s" for row in board)
+
+
+def test_submit_without_accept_header_is_still_json(client):
+    """Back-compat: a client that doesn't ask for a stream gets the single JSON body."""
+    r = _post(client, team="team-j", key="key-j")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/json")
+    assert r.json()["scores"]["fixture.ipynb"] == 1.0
 
 
 def test_ndif_key_required(client):
@@ -274,7 +363,8 @@ def test_concurrent_submissions_bounded_and_all_recorded(tmp_path, monkeypatch):
     state = {"active": 0, "peak": 0}
     slock = threading.Lock()
 
-    def fake_run_pipeline(root, team, config, extra_env=None, on_submission_csv=None):
+    def fake_run_pipeline(root, team, config, extra_env=None, on_submission_csv=None,
+                          on_progress=None, cancel=None):
         with slock:                       # runs in a threadpool thread
             state["active"] += 1
             state["peak"] = max(state["peak"], state["active"])
@@ -324,7 +414,8 @@ def _client_capturing_ndif_key(tmp_path, monkeypatch, *, leaderboard_key=None,
 
     captured: dict[str, str | None] = {"key": None}
 
-    def fake_run_pipeline(root, team, config, extra_env=None, on_submission_csv=None):
+    def fake_run_pipeline(root, team, config, extra_env=None, on_submission_csv=None,
+                          on_progress=None, cancel=None):
         captured["key"] = (extra_env or {}).get("NDIF_API_KEY")
         return [ResultRecord(team=team, notebook="n.ipynb", dataset_key="dummy",
                              metrics={"balanced_accuracy": 1.0}, ok=True)]
