@@ -193,7 +193,9 @@ def ensure_dispatcher_user(iam, cluster_arn: str, bucket: str,
             raise
         print(f"  = user {DISPATCHER_USER} (exists)")
 
-    task_def = f"arn:aws:ecs:{REGION}:{ACCOUNT}:task-definition/{NAME}:*"
+    # Trailing wildcard (no ':') so it covers every task-def family that starts with
+    # NAME AND every revision — e.g. aletheia-runner:2 and aletheia-runner-dev:2.
+    task_def = f"arn:aws:ecs:{REGION}:{ACCOUNT}:task-definition/{NAME}*"
     task_res = f"arn:aws:ecs:{REGION}:{ACCOUNT}:task/{NAME}/*"
     log_arn = f"arn:aws:logs:{REGION}:{ACCOUNT}:log-group:{LOG_GROUP}:*"
     iam.put_user_policy(

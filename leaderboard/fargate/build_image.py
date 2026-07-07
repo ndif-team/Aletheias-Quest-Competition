@@ -38,6 +38,13 @@ FIXTURE = [{"name": "NDIF/aletheia-fake-eval",
             "labels_uri": "NDIF/aletheia-fake-eval-labels",
             "id_column": "id", "label_column": "deceptive"}]
 
+# Fields carried from a source runner.yaml into the baked, execution-only config.
+# Bucket/rate-limit/store settings are Space concerns the task never touches, so
+# they're dropped; datasets, cache_dir, and sandbox are set by the bake itself.
+_CARRY = ("notebook_timeout", "submission_timeout", "mem_mb", "ndif_host",
+          "egress_allowlist", "egress_get_only_suffixes", "install_allowlist",
+          "enforce_egress", "redact_errors", "score_partial", "confine")
+
 
 def _hf_token() -> str:
     p = Path.home() / ".cache/huggingface/token"
@@ -46,7 +53,7 @@ def _hf_token() -> str:
     return p.read_text().strip()
 
 
-def bake(datasets: list[dict], ndif_host: str | None, notebook_timeout: int) -> None:
+def bake(datasets: list[dict], base_cfg: dict) -> None:
     """Populate build-context/: inputs cache, normalized labels CSVs, runner.yaml."""
     sys.path.insert(0, str(LEADERBOARD / "src"))
     from aletheia_runner.config import SPLIT, DatasetConfig, RunnerConfig
@@ -79,13 +86,13 @@ def bake(datasets: list[dict], ndif_host: str | None, notebook_timeout: int) -> 
         baked.append({"name": d.name, "labels_uri": f"/baked/labels/{out_csv.name}",
                       "id_column": "index", "label_column": "deceptive"})
 
-    # 3. Baked runner.yaml (RunnerConfig defaults fill in egress/redaction/limits).
-    cfg = {"datasets": baked, "sandbox": True, "cache_dir": "/baked/cache",
-           "notebook_timeout": notebook_timeout}
-    if ndif_host:
-        cfg["ndif_host"] = ndif_host
+    # 3. Baked runner.yaml: datasets + cache + sandbox set here, everything else
+    # (egress allowlist, timeouts, mem_mb, ndif_host, redaction) carried from source.
+    cfg = {"datasets": baked, "sandbox": True, "cache_dir": "/baked/cache"}
+    cfg.update({k: base_cfg[k] for k in _CARRY if k in base_cfg})
     (BUILD_CTX / "runner.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False))
-    print(f"wrote {BUILD_CTX/'runner.yaml'}")
+    print(f"wrote {BUILD_CTX/'runner.yaml'} (carried: "
+          f"{[k for k in _CARRY if k in base_cfg]})")
 
 
 def docker_build_push(tag: str, heavy: bool) -> str:
@@ -99,11 +106,12 @@ def docker_build_push(tag: str, heavy: bool) -> str:
     return image
 
 
-def register(image: str, tag: str, cpu: str, memory: str) -> str:
+def register(image: str, tag: str, cpu: str, memory: str,
+             family: str | None = None) -> str:
     import boto3
     ecs = boto3.client("ecs", region_name=OUT["region"])
     r = ecs.register_task_definition(
-        family=OUT["task_family"],
+        family=family or OUT["task_family"],
         requiresCompatibilities=["FARGATE"], networkMode="awsvpc",
         cpu=cpu, memory=memory,
         executionRoleArn=OUT["execution_role_arn"],
@@ -127,25 +135,25 @@ def main() -> int:
     ap.add_argument("--tag", default=None, help="ECR image tag (default: fixture|prod)")
     ap.add_argument("--cpu", default="1024")
     ap.add_argument("--memory", default="4096")
+    ap.add_argument("--task-family", default=None,
+                    help="register under this task-def family (default: aletheia-runner)")
     ap.add_argument("--no-register", action="store_true", help="build+push only")
     args = ap.parse_args()
 
     if args.fixture:
-        datasets, ndif_host, timeout = FIXTURE, None, 300
+        datasets, base_cfg = FIXTURE, {"notebook_timeout": 300}
         tag = args.tag or "fixture"
     elif args.config:
         data = yaml.safe_load(Path(args.config).read_text())
-        datasets = data["datasets"]
-        ndif_host = data.get("ndif_host")
-        timeout = data.get("notebook_timeout", 1800)
+        datasets, base_cfg = data["datasets"], data
         tag = args.tag or "prod"
     else:
         sys.exit("pass --fixture or --config <runner.yaml>")
 
-    bake(datasets, ndif_host, timeout)
+    bake(datasets, base_cfg)
     image = docker_build_push(tag, args.heavy)
     if not args.no_register:
-        register(image, tag, args.cpu, args.memory)
+        register(image, tag, args.cpu, args.memory, args.task_family)
     print(f"\ndone. image tag: {tag}")
     return 0
 

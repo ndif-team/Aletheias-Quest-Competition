@@ -222,8 +222,12 @@ def create_app(config: RunnerConfig, store: BaseResultStore,
 
     @app.get("/api/health")
     def health() -> dict:
-        # Public codenames only — never the real dataset names.
-        return {"ok": True, "datasets": list(config.dataset_label_map().values())}
+        # Public codenames only — never the real dataset names. ``backend`` lets an
+        # operator confirm whether execution runs on Fargate or in-process (useful at
+        # cutover; it only reports the mode, exposes no config).
+        return {"ok": True,
+                "backend": "fargate" if backend is not None else "in-process",
+                "datasets": list(config.dataset_label_map().values())}
 
     @app.get("/admin/runs")
     def admin_runs(x_admin_token: str | None = Header(default=None,
