@@ -21,6 +21,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
@@ -149,7 +150,12 @@ def _anonymize(entry: dict, label) -> dict:
 def create_app(config: RunnerConfig, store: BaseResultStore,
                registry: TeamRegistry,
                limiter: RateLimiter | None = None,
-               archive: SubmissionArchive | None = None) -> FastAPI:
+               archive: SubmissionArchive | None = None,
+               backend=None) -> FastAPI:
+    # ``backend`` (a FargateBackend) relocates execution to a per-submission Fargate
+    # task; None keeps the historical in-process path. Everything else — team
+    # resolution, rate limiting, result persistence — is unchanged and stays on the
+    # Space, so the bucket write path (serialized by ``bucket_lock``) is untouched.
     app = FastAPI(title="Aletheia's Quest — Leaderboard")
     # No limiter passed (e.g. most tests) -> unlimited.
     limiter = limiter or RateLimiter("rate_limits.json", 0, 0)
@@ -306,11 +312,23 @@ def create_app(config: RunnerConfig, store: BaseResultStore,
             await run_in_threadpool(store.append, records)
         lb_cache.invalidate()
 
+    def _run_records(root, data, team, extra_env, csv_sink, on_progress,
+                     canceller, run_key):
+        """Execute a submission and return its ResultRecords — on Fargate when a
+        backend is configured (upload zip → RunTask → tail S3 progress → read
+        result.jsonl), else in-process. Blocking; called in a threadpool worker, so
+        it's a drop-in for the old ``pipeline.run_pipeline`` call."""
+        if backend is not None:
+            return backend.run(config, run_key, data, team, extra_env,
+                               on_progress, canceller)
+        return pipeline.run_pipeline(root, team, config, extra_env, csv_sink,
+                                     on_progress, canceller)
+
     def _sse(event: str, **data) -> bytes:
         return f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
 
-    async def _submit_stream(root, team, extra_env, csv_sink, method_tag,
-                             run_id, canceller, tmp):
+    async def _submit_stream(root, data, team, extra_env, csv_sink, method_tag,
+                             run_id, run_key, canceller, tmp):
         """SSE body for a streaming submission (``Accept: text/event-stream``).
 
         Emits ``received`` → ``queued`` (queue depth) → ``running`` → per-dataset
@@ -351,8 +369,8 @@ def create_app(config: RunnerConfig, store: BaseResultStore,
                     async with submit_slots:                 # slot held for the run
                         loop.call_soon_threadsafe(q.put_nowait, (RUNNING, None))
                         records = await run_in_threadpool(
-                            pipeline.run_pipeline, root, team, config,
-                            extra_env, csv_sink, on_progress, canceller)
+                            _run_records, root, data, team, extra_env, csv_sink,
+                            on_progress, canceller, run_key)
                     await _finalize(records, method_tag)     # persist regardless of client
                     return records
                 finally:
@@ -523,7 +541,9 @@ def create_app(config: RunnerConfig, store: BaseResultStore,
 
                 run_seq["n"] += 1
                 run_id = run_seq["n"]
-                canceller = Canceller()
+                run_key = uuid.uuid4().hex     # unique S3 prefix (survives Space restarts)
+                canceller = (backend.new_canceller() if backend is not None
+                             else Canceller())
                 runs[run_id] = {"id": run_id, "team": team,
                                 "started_at": when.isoformat(), "canceller": canceller}
 
@@ -533,8 +553,8 @@ def create_app(config: RunnerConfig, store: BaseResultStore,
                 if accept and "text/event-stream" in accept.lower():
                     stream_owns_cleanup = True
                     return StreamingResponse(
-                        _submit_stream(root, team, extra_env, csv_sink, method_tag,
-                                       run_id, canceller, tmp),
+                        _submit_stream(root, data, team, extra_env, csv_sink, method_tag,
+                                       run_id, run_key, canceller, tmp),
                         media_type="text/event-stream",
                         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
@@ -547,8 +567,8 @@ def create_app(config: RunnerConfig, store: BaseResultStore,
                     async with submit_slots:
                         try:
                             records = await run_in_threadpool(
-                                pipeline.run_pipeline, root, team, config,
-                                extra_env, csv_sink, None, canceller)
+                                _run_records, root, data, team, extra_env,
+                                csv_sink, None, canceller, run_key)
                         except (FileNotFoundError, ValueError) as e:
                             raise HTTPException(
                                 400, _redact_dataset_names(f"invalid submission: {e}", config))
@@ -588,7 +608,11 @@ def _app_from_env() -> FastAPI:
                           config.rate_limit_window_hours * 3600,
                           token=config.hf_token, exempt_uri=exempt_uri or None)
     archive = SubmissionArchive(config.submissions_uri, token=config.hf_token)
-    return create_app(config, store, registry, limiter, archive)
+    # Fargate execution when configured (Space variables), else in-process.
+    from .fargate_backend import FargateBackend, FargateConfig
+    fargate_cfg = FargateConfig.from_env()
+    backend = FargateBackend(fargate_cfg) if fargate_cfg is not None else None
+    return create_app(config, store, registry, limiter, archive, backend)
 
 
 app = _app_from_env()

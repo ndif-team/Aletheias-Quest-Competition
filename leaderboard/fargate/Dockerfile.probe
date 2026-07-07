@@ -1,0 +1,9 @@
+# Ultra-lean image to answer ONE question: does the Fargate managed kernel let an
+# unprivileged process use the sandbox primitives (Landlock, seccomp user-notif)?
+# probe.py is stdlib-only and self-contained, so no package install is needed.
+# Build context is the leaderboard/ root.
+FROM python:3.12-slim
+# Both are stdlib-only and standalone-runnable, so no package install is needed.
+COPY src/aletheia_runner/sandbox/probe.py /app/probe.py
+COPY src/aletheia_runner/sandbox/landlock.py /app/landlock.py
+CMD ["python", "/app/probe.py"]

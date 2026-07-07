@@ -11,3 +11,8 @@ venv/
 results.jsonl
 *.zip
 .DS_Store
+
+# Fargate migration: infra ids, the dispatcher IAM access key, and baked build context
+fargate/infra-outputs.json
+fargate/*credentials*.json
+fargate/build-context/

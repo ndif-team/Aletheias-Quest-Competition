@@ -1,0 +1,42 @@
+# The Fargate submission runner: the full aletheia_runner + sandbox, plus the
+# baked eval data, run one-per-submission. Build context is the leaderboard/ root.
+#
+#   INSTALL_HEAVY=0 (default): lean image (datasets/pandas/nbclient) — enough for a
+#     fixture smoke test that doesn't touch NDIF.
+#   INSTALL_HEAVY=1: also bake CPU torch + nnsight (pinned) + transformers/peft, for
+#     real submissions that trace on NDIF. Pins mirror the Space Dockerfile.
+FROM python:3.12-slim
+
+# Non-root user (mirror the Space's uid 1000) so the sandboxed child never runs as
+# root; label isolation is Landlock-based, this is defense-in-depth.
+RUN useradd -m -u 1000 user
+ENV HOME=/home/user PATH=/home/user/.local/bin:$PATH
+
+# git + a C toolchain: the hackathon nnsight branch builds a C extension from source.
+RUN apt-get update && apt-get install -y --no-install-recommends git build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY pyproject.toml /app/pyproject.toml
+COPY src /app/src
+COPY fargate/runner_main.py /app/runner_main.py
+
+RUN pip install --no-cache-dir ".[space]" boto3 \
+    && python -m ipykernel install --name python3 --display-name python3
+
+ARG INSTALL_HEAVY=0
+RUN if [ "$INSTALL_HEAVY" = "1" ]; then \
+      pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch torchvision \
+      && pip install --no-cache-dir "transformers==5.12.1" "peft<0.19" \
+         "nnsight @ git+https://github.com/ndif-team/nnsight.git@e4f37fa3e7c6bb936b4a37e2b5402dca2330610c" ; \
+    fi
+
+# Baked eval data (built by build_image.py): the inputs arrow cache + lora configs
+# under cache/, the local labels CSVs under labels/, and the runner.yaml that points
+# at them. No HF org token is needed at runtime.
+COPY fargate/build-context/ /baked/
+ENV RUNNER_CONFIG=/baked/runner.yaml
+
+RUN chown -R user /app /baked
+USER user
+CMD ["python", "/app/runner_main.py"]
