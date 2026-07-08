@@ -6,10 +6,38 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from aletheia_runner.app import create_app
+from aletheia_runner.app import create_app as _create_app
 from aletheia_runner.config import DatasetConfig, RunnerConfig, dataset_label
 from aletheia_runner.registry import TeamRegistry
 from aletheia_runner.results import ResultStore
+
+
+class _InProcessBackend:
+    """Test double: runs the pipeline in the TEST process so the web-layer tests can
+    exercise a full submission without AWS. Production ships no in-process path — the
+    Space only dispatches to Fargate — so this deliberately lives in the tests, not
+    the package. Same ``run`` / ``new_canceller`` interface as the FargateBackend."""
+
+    def run(self, config, run_key, zip_bytes, team, extra_env, on_progress=None, cancel=None):
+        import tempfile
+
+        from aletheia_runner import pipeline   # module attr so tests can monkeypatch run_pipeline
+        with tempfile.TemporaryDirectory() as tmp:
+            zp = Path(tmp) / "s.zip"
+            zp.write_bytes(zip_bytes)
+            root = pipeline.unpack(zp, Path(tmp) / "u")
+            return pipeline.run_pipeline(root, team, config, extra_env, None,
+                                         on_progress, cancel)
+
+    def new_canceller(self):
+        from aletheia_runner.sandbox import Canceller
+        return Canceller()
+
+
+def create_app(*args, backend=None, **kwargs):
+    """Tests exercise the web layer against an in-process backend (production uses the
+    FargateBackend). Pass an explicit ``backend=`` to override."""
+    return _create_app(*args, backend=backend or _InProcessBackend(), **kwargs)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

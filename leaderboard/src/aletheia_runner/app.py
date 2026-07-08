@@ -152,10 +152,11 @@ def create_app(config: RunnerConfig, store: BaseResultStore,
                limiter: RateLimiter | None = None,
                archive: SubmissionArchive | None = None,
                backend=None) -> FastAPI:
-    # ``backend`` (a FargateBackend) relocates execution to a per-submission Fargate
-    # task; None keeps the historical in-process path. Everything else — team
-    # resolution, rate limiting, result persistence — is unchanged and stays on the
-    # Space, so the bucket write path (serialized by ``bucket_lock``) is untouched.
+    # ``backend`` runs the submission: production uses a FargateBackend (launches a
+    # per-submission task). The Space never executes a submission in-process. Required
+    # — with no backend configured, /submit returns 503. Team resolution, rate
+    # limiting, and result persistence stay on the Space (bucket writes serialized by
+    # ``bucket_lock``), unchanged. (Tests inject an in-process backend double.)
     app = FastAPI(title="Aletheia's Quest — Leaderboard")
     # No limiter passed (e.g. most tests) -> unlimited.
     limiter = limiter or RateLimiter("rate_limits.json", 0, 0)
@@ -171,10 +172,9 @@ def create_app(config: RunnerConfig, store: BaseResultStore,
     # loop, so a plain dict is safe; read by /api/me.
     pending: dict[str, int] = {}
     # In-flight runs by id, for the operator-only admin endpoints. Each carries a
-    # Canceller whose .cancel() SIGKILLs the run's live subprocess tree from another
-    # thread (the run itself executes in a threadpool worker). Mutated only on the
-    # event loop; the Canceller is thread-safe.
-    from .sandbox import Canceller
+    # cancel handle (from the backend) whose .cancel() stops the live run from another
+    # thread — StopTask on Fargate, SIGKILL in-process. Mutated only on the event
+    # loop; the handle is thread-safe.
     runs: dict[int, dict] = {}
     run_seq = {"n": 0}
 
@@ -316,22 +316,17 @@ def create_app(config: RunnerConfig, store: BaseResultStore,
             await run_in_threadpool(store.append, records)
         lb_cache.invalidate()
 
-    def _run_records(root, data, team, extra_env, csv_sink, on_progress,
-                     canceller, run_key):
-        """Execute a submission and return its ResultRecords — on Fargate when a
-        backend is configured (upload zip → RunTask → tail S3 progress → read
-        result.jsonl), else in-process. Blocking; called in a threadpool worker, so
-        it's a drop-in for the old ``pipeline.run_pipeline`` call."""
-        if backend is not None:
-            return backend.run(config, run_key, data, team, extra_env,
-                               on_progress, canceller)
-        return pipeline.run_pipeline(root, team, config, extra_env, csv_sink,
-                                     on_progress, canceller)
+    def _run_records(data, team, extra_env, on_progress, canceller, run_key):
+        """Execute a submission on the configured backend (Fargate in production; a
+        test double in the suite) and return its ResultRecords. Blocking; called in a
+        threadpool worker."""
+        return backend.run(config, run_key, data, team, extra_env,
+                           on_progress, canceller)
 
     def _sse(event: str, **data) -> bytes:
         return f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
 
-    async def _submit_stream(root, data, team, extra_env, csv_sink, method_tag,
+    async def _submit_stream(data, team, extra_env, method_tag,
                              run_id, run_key, canceller, tmp):
         """SSE body for a streaming submission (``Accept: text/event-stream``).
 
@@ -373,7 +368,7 @@ def create_app(config: RunnerConfig, store: BaseResultStore,
                     async with submit_slots:                 # slot held for the run
                         loop.call_soon_threadsafe(q.put_nowait, (RUNNING, None))
                         records = await run_in_threadpool(
-                            _run_records, root, data, team, extra_env, csv_sink,
+                            _run_records, data, team, extra_env,
                             on_progress, canceller, run_key)
                     await _finalize(records, method_tag)     # persist regardless of client
                     return records
@@ -426,6 +421,8 @@ def create_app(config: RunnerConfig, store: BaseResultStore,
         (same run, redacted progress). Clients that don't send it are unaffected."""
         if not config.datasets:
             raise HTTPException(503, "runner has no datasets configured")
+        if backend is None:
+            raise HTTPException(503, "no execution backend configured")
         if not ndif_api_key:
             raise HTTPException(400, "an NDIF API key is required (X-NDIF-API-Key)")
 
@@ -517,13 +514,8 @@ def create_app(config: RunnerConfig, store: BaseResultStore,
                         print(f"[archive] failed to store submission for {team!r}: {e}",
                               file=sys.stderr, flush=True)
 
-                # Sink that stores each produced submission.csv next to the zip (same
-                # timestamp). Runs inside the worker thread; never sinks the run.
-                csv_sink = None
-                if archive is not None:
-                    def csv_sink(notebook: str, dataset_key: str, csv_bytes: bytes,
-                                 _team=team, _when=when) -> None:
-                        archive.save_csv(_team, _when, notebook, dataset_key, csv_bytes)
+                # (Produced submission.csv files are archived by the backend: the
+                # Fargate task writes them to S3 under the run prefix.)
 
                 # The submitter's keys are injected into their sandboxed run:
                 # NDIF_API_KEY for nnsight remote traces (run_ndif_key was chosen by
@@ -546,8 +538,7 @@ def create_app(config: RunnerConfig, store: BaseResultStore,
                 run_seq["n"] += 1
                 run_id = run_seq["n"]
                 run_key = uuid.uuid4().hex     # unique S3 prefix (survives Space restarts)
-                canceller = (backend.new_canceller() if backend is not None
-                             else Canceller())
+                canceller = backend.new_canceller()
                 runs[run_id] = {"id": run_id, "team": team,
                                 "started_at": when.isoformat(), "canceller": canceller}
 
@@ -557,7 +548,7 @@ def create_app(config: RunnerConfig, store: BaseResultStore,
                 if accept and "text/event-stream" in accept.lower():
                     stream_owns_cleanup = True
                     return StreamingResponse(
-                        _submit_stream(root, data, team, extra_env, csv_sink, method_tag,
+                        _submit_stream(data, team, extra_env, method_tag,
                                        run_id, run_key, canceller, tmp),
                         media_type="text/event-stream",
                         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -571,8 +562,8 @@ def create_app(config: RunnerConfig, store: BaseResultStore,
                     async with submit_slots:
                         try:
                             records = await run_in_threadpool(
-                                _run_records, root, data, team, extra_env,
-                                csv_sink, None, canceller, run_key)
+                                _run_records, data, team, extra_env,
+                                None, canceller, run_key)
                         except (FileNotFoundError, ValueError) as e:
                             raise HTTPException(
                                 400, _redact_dataset_names(f"invalid submission: {e}", config))
@@ -613,6 +604,10 @@ def _app_from_env() -> FastAPI:
                           token=config.hf_token, exempt_uri=exempt_uri or None)
     archive = SubmissionArchive(config.submissions_uri, token=config.hf_token)
     # Fargate execution when configured (Space variables), else in-process.
+    # The Space ONLY dispatches to Fargate — it never runs a submission in-process.
+    # Unconfigured -> no backend -> /submit returns 503 (rather than silently running
+    # heavy work on the Space). (`submit.py --dry` still rehearses locally on the
+    # participant's own machine; that path doesn't touch the Space.)
     from .fargate_backend import FargateBackend, FargateConfig
     fargate_cfg = FargateConfig.from_env()
     backend = FargateBackend(fargate_cfg) if fargate_cfg is not None else None
