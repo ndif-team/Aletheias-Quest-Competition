@@ -16,3 +16,4 @@ results.jsonl
 fargate/infra-outputs.json
 fargate/*credentials*.json
 fargate/build-context/
+fargate/red_team.py
