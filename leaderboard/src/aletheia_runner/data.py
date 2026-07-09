@@ -29,6 +29,14 @@ from .config import SPLIT, RunnerConfig
 _WEIGHT_PATTERNS = ["*.safetensors", "*.bin", "*.pt", "*.pth", "*.gguf",
                     "*.h5", "*.msgpack", "*.onnx"]
 
+# Bump this whenever a dataset's CONTENTS change under an unchanged name (e.g. a
+# re-pushed parquet fixing a bad model id). The Arrow cache dir is namespaced by
+# this value, so a bump gives a guaranteed-CLEAN directory — the prepared-cache
+# marker is otherwise keyed only on dataset *names* and a same-name content change
+# would NOT invalidate it, leaving the stale Arrow served. Old epoch dirs are left
+# behind (rebuilt inputs, small); prune them manually if /data ever gets tight.
+_CACHE_EPOCH = "2026-07-02.2-heal-qwen-validation-cache"
+
 
 @dataclass
 class DataLayout:
@@ -78,9 +86,13 @@ def prepare_inputs(config: RunnerConfig) -> DataLayout:
     """Build the dataset Arrow cache and predownload LoRA adapter configs (in the
     trusted parent). Idempotent via a marker."""
     cache = Path(config.cache_dir)
-    datasets_cache = cache / "datasets"
+    # Namespace the Arrow cache by epoch: a bump points at a fresh, empty directory,
+    # so a re-pushed dataset is rebuilt cleanly with no in-place wipe (an in-place
+    # rmtree risked leaving a half-deleted, corrupt cache dir). The marker lives
+    # inside the epoch dir, so it's inherently per-epoch.
+    datasets_cache = cache / "datasets" / _CACHE_EPOCH
     hub_cache = cache / "hf_hub"
-    marker = cache / ".prepared"
+    marker = datasets_cache / ".prepared"
     layout = DataLayout(datasets_cache=datasets_cache, hub_cache=hub_cache)
 
     key = json.dumps(sorted(d.name for d in config.datasets), sort_keys=True)
