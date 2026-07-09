@@ -158,6 +158,11 @@ class RunnerConfig:
     # hand at any time. Empty -> derived as ``rate_limit_exempt.json`` next to
     # ``rate_limits_uri`` (so it lives in the same bucket by default).
     rate_limit_exempt_uri: str = ""
+    # Disqualified submissions: a JSON list the app only READS (edited by hand),
+    # each entry ``{"team", "submitted_at", "reason"[, "notebook"]}``. A matching
+    # leaderboard row is shown muted, left out of the ranking, and carries the
+    # reason. Empty -> derived as ``invalidations.json`` next to ``results_uri``.
+    invalidations_uri: str = ""
     # The single timeout: wall-clock seconds allowed per (notebook, dataset) run.
     # Each run gets a fresh budget (e.g. 1800 = 30 min each for two datasets). The
     # sandbox kills the run's process group when it's exceeded; there is no separate
@@ -214,6 +219,11 @@ class RunnerConfig:
     # runs). Sourced from the ADMIN_TOKEN env var (an HF Space secret); never set in
     # the committed config. Unset -> the admin endpoints are disabled (404).
     admin_token: str | None = None
+    # Team names shown as non-competing REFERENCE entries ("baselines"): the
+    # leaderboard marks their rows and leaves them out of the competitive ranking
+    # (they still appear, in score order, as context to beat). Multiple names can
+    # map to the same reference set (e.g. a renamed account's stragglers).
+    baseline_teams: list[str] = field(default_factory=list)
 
     def dataset_label_map(self) -> dict[str, str]:
         """Map each configured dataset key to its public codename (``dataset_label``).

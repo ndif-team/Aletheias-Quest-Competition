@@ -204,6 +204,61 @@ def test_submit_without_accept_header_is_still_json(client):
     assert r.json()["scores"]["fixture.ipynb"] == 1.0
 
 
+def test_leaderboard_flags_baseline_teams(tmp_path):
+    """Rows whose team is in ``baseline_teams`` are tagged ``baseline: true`` (so the
+    page can mark + de-rank them); other rows are ``baseline: false``."""
+    cfg = RunnerConfig(
+        datasets=[DatasetConfig(name="dummy", labels_uri=str(FIXTURES / "labels.csv"))],
+        baseline_teams=["Baselines"])
+    store = ResultStore(str(tmp_path / "results.jsonl"))
+    registry = TeamRegistry(str(tmp_path / "teams.json"))
+    client = TestClient(create_app(cfg, store, registry))
+    assert _post(client, team="Baselines", key="key-b").status_code == 200
+    assert _post(client, team="Contender", key="key-c").status_code == 200
+    rows = {r["team"]: r for r in client.get("/api/leaderboard").json()["results"]}
+    assert rows["Baselines"]["baseline"] is True
+    assert rows["Contender"]["baseline"] is False
+
+
+def test_invalidations_loader(tmp_path):
+    from aletheia_runner.app import _Invalidations
+    f = tmp_path / "i.json"
+    f.write_text(json.dumps([
+        {"team": "A", "submitted_at": "2026-01-01T00:00:00", "reason": "r1"},
+        {"team": "B"},                                   # no submitted_at -> ignored
+        {"team": "C", "submitted_at": "2026-01-02T00:00:00"},   # reason optional -> ""
+    ]))
+    m = _Invalidations(str(f), None, ttl=0).get()
+    assert m == {("A", "2026-01-01T00:00:00"): "r1", ("C", "2026-01-02T00:00:00"): ""}
+    # missing file / bad json -> empty, never raises
+    assert _Invalidations(str(tmp_path / "nope.json"), None, ttl=0).get() == {}
+
+
+def test_leaderboard_marks_invalid_submission(tmp_path, monkeypatch):
+    """A submission listed in the invalidations file is flagged ``invalid`` + reason;
+    others aren't. (TTL 0 so the read isn't cached across the two fetches.)"""
+    from aletheia_runner import app as app_module
+    monkeypatch.setattr(app_module, "LEADERBOARD_CACHE_TTL", 0.0)
+    inval = tmp_path / "inval.json"
+    cfg = RunnerConfig(
+        datasets=[DatasetConfig(name="dummy", labels_uri=str(FIXTURES / "labels.csv"))],
+        invalidations_uri=str(inval))
+    store = ResultStore(str(tmp_path / "results.jsonl"))
+    registry = TeamRegistry(str(tmp_path / "teams.json"))
+    client = TestClient(create_app(cfg, store, registry))
+    assert _post(client, team="team-dq", key="key-dq").status_code == 200
+
+    row = next(r for r in client.get("/api/leaderboard").json()["results"]
+               if r["team"] == "team-dq")
+    assert not row.get("invalid")
+    inval.write_text(json.dumps([{"team": "team-dq", "submitted_at": row["submitted_at"],
+                                  "reason": "used a disallowed external API"}]))
+    row2 = next(r for r in client.get("/api/leaderboard").json()["results"]
+                if r["team"] == "team-dq")
+    assert row2["invalid"] is True
+    assert row2["invalid_reason"] == "used a disallowed external API"
+
+
 def test_ndif_key_required(client):
     assert _post(client, team="team-a", key=None).status_code == 400
 

@@ -109,6 +109,10 @@
     .filterbar button.active { color: var(--paper); background: var(--ink); border-color: var(--ink); }
     .filterbar button.active .tag { border-color: var(--paper); }
     .filterbar button.active .tag.black { background: var(--paper); }
+    .filterbar .dq-toggle { margin-left: 14px; }
+    .filterbar .dq-toggle::before { content: "\26A0"; margin-right: 0.5em; color: #c0392b; }
+    .filterbar .dq-toggle.active { color: var(--paper); background: #c0392b; border-color: #c0392b; }
+    .filterbar .dq-toggle.active::before { color: var(--paper); }
 
     /* ── Ledger ───────────────────────────────────────────────── */
     table.ledger { width: 100%; border-collapse: collapse; }
@@ -150,6 +154,55 @@
     tr.leader .num::before { content: "✦ "; font-size: 0.7em; vertical-align: 0.18em; }
     tr.leader .score { color: var(--accent); }
     tr.leader .team { font-style: italic; }
+
+    /* Baseline / reference entries — shown in score order but marked and not ranked */
+    tr.baseline td, tr.baseline:hover td { background: var(--paper-2); }
+    tr.baseline .team { color: var(--muted); font-weight: 400; }
+    tr.baseline .num.base-mark { color: var(--faint); font-size: 1.1rem; }
+    .base-chip {
+      display: inline-block; margin-left: 12px; padding: 2px 9px;
+      font-family: var(--serif); font-size: 9px; letter-spacing: 0.16em;
+      text-transform: uppercase; color: var(--muted);
+      border: 1px solid var(--rule-bold); border-radius: 999px; vertical-align: 0.28em;
+    }
+
+    /* Pagination */
+    .pager { display: flex; align-items: center; justify-content: center;
+      gap: 20px; margin-top: 26px; }
+    .pager button {
+      font-family: var(--serif); font-size: 11px; letter-spacing: 0.14em;
+      text-transform: uppercase; color: var(--muted); background: none;
+      border: 1px solid var(--rule-bold); border-radius: 2px;
+      padding: 7px 15px; cursor: pointer;
+    }
+    .pager button:hover:not(:disabled) { color: var(--ink); border-color: var(--ink); }
+    .pager button:disabled { opacity: 0.32; cursor: default; }
+    .pager .pageinfo { font-family: var(--serif); font-size: 11px;
+      letter-spacing: 0.14em; color: var(--muted); }
+
+    /* Disqualified / invalid submissions — shown in the spot they'd rank, muted,
+       unranked, with a red alert marker whose hover reveals the reason. */
+    tr.invalid td { background: rgba(192,57,43,0.035); }
+    tr.invalid .team, tr.invalid .sub, tr.invalid .when,
+    tr.invalid .run, tr.invalid .second { color: var(--faint); }
+    tr.invalid .score { color: var(--faint);
+      text-decoration: line-through; text-decoration-color: rgba(192,57,43,0.55); }
+    .dq { position: relative; display: inline-flex; cursor: help; outline: none; }
+    .dq-ico { display: block; filter: drop-shadow(0 1px 1px rgba(0,0,0,0.12)); }
+    .dq-tip {
+      position: absolute; left: calc(100% + 12px); top: 50%; transform: translateY(-50%);
+      width: 250px; z-index: 30; display: none;
+      background: var(--paper); color: var(--ink);
+      border: 1px solid var(--rule-bold); border-left: 3px solid #c0392b; border-radius: 4px;
+      padding: 11px 13px; box-shadow: 0 10px 30px rgba(30,20,0,0.18);
+      font-family: var(--serif); font-size: 12.5px; line-height: 1.5;
+      letter-spacing: 0; text-transform: none; white-space: normal; text-align: left;
+    }
+    .dq-tip-title { display: block; font-size: 9px; letter-spacing: 0.18em;
+      text-transform: uppercase; color: #c0392b; margin-bottom: 5px; }
+    .dq-tip::after { content: ""; position: absolute; right: 100%; top: 50%;
+      transform: translateY(-50%); border: 6px solid transparent; border-right-color: var(--rule-bold); }
+    .dq:hover .dq-tip, .dq:focus .dq-tip, .dq:focus-within .dq-tip { display: block; }
 
     /* secondary metric (AUROC) + runtime, shown quietly next to the headline score */
     .ledger th.c-second, .ledger td.c-second,
@@ -279,6 +332,7 @@
       <button data-tag="all" class="active" onclick="setFilter('all')">All</button>
       <button data-tag="white" onclick="setFilter('white')"><span class="tag white"></span>White-box</button>
       <button data-tag="black" onclick="setFilter('black')"><span class="tag black"></span>Black-box</button>
+      <button id="dq-toggle" class="dq-toggle" onclick="toggleDisqualified()" title="Show submissions disqualified for a rule violation">Show disqualified</button>
     </div>
 
     <main id="board">
@@ -308,6 +362,9 @@
     let firstRender = true;
     let lastData = null;          // most recent /api/leaderboard payload
     let tagFilter = "all";        // "all" | "white" | "black"
+    let currentPage = 1;          // 1-based page of the ledger
+    const PAGE_SIZE = 20;         // entrants shown per page
+    let showDisqualified = false; // DQ'd submissions are hidden unless this is on
 
     // Little box glyph for a method tag (hollow = white-box, filled = black-box).
     function tagBadge(tag) {
@@ -316,11 +373,39 @@
       return `<span class="tag ${tag}" title="${label} method"></span>`;
     }
 
+    // Red alert triangle shown in the rank cell of a disqualified submission;
+    // hovering (or focusing) it reveals the reason in a styled box.
+    function dqMark(reason) {
+      const r = esc(reason || "This submission was disqualified.");
+      return `<span class="dq" tabindex="0" role="img" aria-label="Disqualified: ${r}">
+          <svg class="dq-ico" viewBox="0 0 24 22" width="22" height="20" aria-hidden="true">
+            <path d="M12 1.4 23.2 20.6 0.8 20.6 Z" fill="#c0392b"/>
+            <rect x="10.9" y="7.5" width="2.2" height="7.2" rx="1.1" fill="#fff"/>
+            <circle cx="12" cy="17.8" r="1.25" fill="#fff"/>
+          </svg>
+          <span class="dq-tip"><span class="dq-tip-title">Disqualified</span>${r}</span>
+        </span>`;
+    }
+
     function setFilter(t) {
       tagFilter = t;
-      document.querySelectorAll("#filterbar button").forEach(b =>
+      currentPage = 1;                 // a new view starts at page 1
+      document.querySelectorAll("#filterbar button[data-tag]").forEach(b =>
         b.classList.toggle("active", b.dataset.tag === t));
       renderBoard();
+    }
+
+    function toggleDisqualified() {
+      showDisqualified = !showDisqualified;
+      currentPage = 1;
+      document.getElementById("dq-toggle").classList.toggle("active", showDisqualified);
+      renderBoard();
+    }
+
+    function gotoPage(p) {
+      currentPage = p;
+      renderBoard();
+      document.getElementById("board").scrollIntoView({ behavior: "smooth", block: "start" });
     }
 
     const METRIC_LABEL = { balanced_accuracy: "Bal. Accuracy", auroc: "AUROC",
@@ -391,11 +476,15 @@
       const secondary = metricLabel(lastData.secondary || "auroc");
       const all = lastData.results || [];
       const rows = tagFilter === "all" ? all : all.filter(r => r.tag === tagFilter);
-      const scope = tagFilter === "all" ? "" : `     /     ${tagFilter}-box only`;
+      // Disqualified submissions are hidden unless the "show disqualified" toggle is on.
+      const shown = showDisqualified ? rows : rows.filter(r => !r.invalid);
+      const dqHidden = rows.length - shown.length;
+      let scope = tagFilter === "all" ? "" : `     /     ${tagFilter}-box only`;
+      if (dqHidden > 0) scope += `     /     ${dqHidden} disqualified hidden`;
       const now = new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-      meta.textContent = `Ranked by ${primary}     /     ${rows.length} entr${rows.length === 1 ? "y" : "ies"}${scope}     /     revised ${now}`;
+      meta.textContent = `Ranked by ${primary}     /     ${shown.length} entr${shown.length === 1 ? "y" : "ies"}${scope}     /     revised ${now}`;
 
-      if (!rows.length) {
+      if (!shown.length) {
         const msg = tagFilter === "all"
           ? "The ledger stands empty. Be the first to be recorded."
           : `No ${tagFilter}-box submissions recorded yet.`;
@@ -403,21 +492,52 @@
         return;
       }
 
-      // Rank within the current view (so a category filter shows that category's standing).
-      const body = rows.map((r, i) => {
-        const delay = firstRender ? (0.55 + i * 0.05).toFixed(2) + "s" : "0s";
+      // Assign competitive ranks across the FULL view, SKIPPING de-ranked rows —
+      // baselines (reference) and invalid/disqualified submissions. Both still show
+      // in score order; they just don't take a rank. Then paginate.
+      let rank = 0;
+      const ranked = shown.map(r => {
+        const isBase = !!r.baseline, isInvalid = !!r.invalid;
+        const deranked = isBase || isInvalid;
+        if (!deranked) rank++;
+        return { r, isBase, isInvalid, rank: deranked ? null : rank,
+                 leader: !deranked && rank === 1 };
+      });
+
+      const totalPages = Math.max(1, Math.ceil(ranked.length / PAGE_SIZE));
+      if (currentPage > totalPages) currentPage = totalPages;
+      if (currentPage < 1) currentPage = 1;
+      const start = (currentPage - 1) * PAGE_SIZE;
+      const pageRows = ranked.slice(start, start + PAGE_SIZE);
+
+      const body = pageRows.map((row, j) => {
+        const gi = start + j;                    // global index -> stable data-i for toggle
+        const r = row.r, isBase = row.isBase, isInvalid = row.isInvalid;
+        const delay = firstRender ? (0.55 + j * 0.05).toFixed(2) + "s" : "0s";
+        const rankCell = isInvalid
+          ? dqMark(r.invalid_reason)
+          : (isBase ? `<span class="num base-mark">&middot;</span>`
+                    : `<span class="num">${row.rank}</span>`);
+        const chip = isBase ? `<span class="base-chip">baseline</span>` : "";
         return `
-          <tr class="row ${i === 0 ? "leader" : ""}" data-i="${i}" style="animation-delay:${delay}" onclick="toggleRow(${i})">
-            <td class="c-rank"><span class="num">${i + 1}</span></td>
-            <td class="c-team"><span class="team">${esc(r.team)}</span></td>
+          <tr class="row ${row.leader ? "leader" : ""} ${isBase ? "baseline" : ""} ${isInvalid ? "invalid" : ""}" data-i="${gi}" style="animation-delay:${delay}" onclick="toggleRow(${gi})">
+            <td class="c-rank">${rankCell}</td>
+            <td class="c-team"><span class="team">${esc(r.team)}</span>${chip}</td>
             <td class="c-sub"><span class="sub">${esc(nbName(r.notebook))}</span>${tagBadge(r.tag)}</td>
             <td class="c-when"><span class="when">${esc(fmtTime(r.submitted_at))}</span></td>
             <td class="c-run"><span class="run">${esc(fmtDur(r.runtime_seconds))}</span></td>
             <td class="c-second"><span class="second">${fmt(r.auroc)}</span></td>
             <td class="c-score"><span class="score">${fmt(r.balanced_accuracy)}</span></td>
           </tr>
-          <tr class="detail hidden" data-i="${i}"><td colspan="7">${dsTable(r.datasets)}</td></tr>`;
+          <tr class="detail hidden" data-i="${gi}"><td colspan="7">${dsTable(r.datasets)}</td></tr>`;
       }).join("");
+
+      const pager = totalPages > 1 ? `
+        <div class="pager">
+          <button ${currentPage <= 1 ? "disabled" : ""} onclick="gotoPage(${currentPage - 1})">&lsaquo; prev</button>
+          <span class="pageinfo">Page ${currentPage} of ${totalPages}</span>
+          <button ${currentPage >= totalPages ? "disabled" : ""} onclick="gotoPage(${currentPage + 1})">next &rsaquo;</button>
+        </div>` : "";
 
       board.innerHTML = `<table class="ledger">
         <thead><tr>
@@ -429,7 +549,7 @@
           <th class="c-second">${esc(secondary)}</th>
           <th class="c-score">${esc(primary)}</th>
         </tr></thead>
-        <tbody>${body}</tbody></table>`;
+        <tbody>${body}</tbody></table>${pager}`;
       firstRender = false;
     }
 

@@ -74,6 +74,54 @@ class _LeaderboardCache:
             self._val = None
 
 
+def _read_json_uri(uri: str, token: str | None):
+    """Read JSON from a ``bucket://`` uri or a local path; None if missing/unset."""
+    if not uri:
+        return None
+    if is_bucket_uri(uri):
+        from huggingface_hub import download_bucket_files
+        bucket_id, path = parse_bucket_uri(uri, "invalidations.json")
+        with tempfile.TemporaryDirectory(prefix="aletheia-inv-") as tmp:
+            local = Path(tmp) / "f.json"
+            download_bucket_files(bucket_id, files=[(path, str(local))],
+                                  raise_on_missing_files=False, token=token)
+            return json.loads(local.read_text()) if local.exists() else None
+    p = Path(uri)
+    return json.loads(p.read_text()) if p.exists() else None
+
+
+class _Invalidations:
+    """TTL-cached list of disqualified submissions from a read-only JSON file.
+
+    Each entry is ``{"team", "submitted_at", "reason"[, "notebook"]}``; a leaderboard
+    row matches on ``(team, submitted_at)``. Malformed/missing -> ``{}`` (a bad file
+    must never break the board)."""
+
+    def __init__(self, uri: str, token: str | None, ttl: float):
+        self._uri, self._token, self._ttl = uri, token, ttl
+        self._lock = threading.Lock()
+        self._at = 0.0
+        self._val: dict[tuple, str] = {}
+
+    def get(self) -> dict[tuple, str]:
+        """Map ``(team, submitted_at) -> reason`` for the current invalidations."""
+        with self._lock:
+            if self._at and time.monotonic() - self._at < self._ttl:
+                return self._val
+        try:
+            data = _read_json_uri(self._uri, self._token)
+        except Exception:  # noqa: BLE001 - never let a bad file break the leaderboard
+            data = None
+        val = {}
+        if isinstance(data, list):
+            for e in data:
+                if isinstance(e, dict) and e.get("team") and e.get("submitted_at"):
+                    val[(e["team"], e["submitted_at"])] = str(e.get("reason", ""))
+        with self._lock:
+            self._val, self._at = val, time.monotonic()
+        return val
+
+
 def _normalize_tag(raw: str | None) -> str | None:
     """Map a submitted method tag to the canonical "white" / "black" (or None).
 
@@ -168,6 +216,13 @@ def create_app(config: RunnerConfig, store: BaseResultStore,
     submit_slots = asyncio.Semaphore(MAX_CONCURRENT_SUBMISSIONS)
     bucket_lock = asyncio.Lock()
     lb_cache = _LeaderboardCache(store, LEADERBOARD_CACHE_TTL)
+    # Disqualified submissions (read-only JSON, edited by hand). Default: a sibling
+    # of the results object in the same bucket.
+    inv_uri = config.invalidations_uri
+    if not inv_uri and is_bucket_uri(config.results_uri):
+        bucket_id, _ = parse_bucket_uri(config.results_uri, "results.jsonl")
+        inv_uri = f"bucket://{bucket_id}/invalidations.json"
+    invalidations = _Invalidations(inv_uri, config.hf_token, LEADERBOARD_CACHE_TTL)
     # In-flight submissions per team (queued or running). Mutated only on the event
     # loop, so a plain dict is safe; read by /api/me.
     pending: dict[str, int] = {}
@@ -198,8 +253,23 @@ def create_app(config: RunnerConfig, store: BaseResultStore,
 
     @app.get("/api/leaderboard")
     def api_leaderboard() -> dict:
+        # Flag reference/baseline rows and disqualified submissions so the page can
+        # mark them and leave them out of the competitive rank (both still show, in
+        # score order — baselines as context, invalid ones in the spot they'd rank).
+        baseline = set(config.baseline_teams)
+        inval = invalidations.get()      # (team, submitted_at) -> reason
+
+        def tag(r: dict) -> dict:
+            row = _anonymize(r, label)
+            row["baseline"] = r.get("team") in baseline
+            reason = inval.get((r.get("team"), r.get("submitted_at")))
+            if reason is not None:
+                row["invalid"] = True
+                row["invalid_reason"] = reason
+            return row
+
         return {"primary": PRIMARY_METRIC, "secondary": SECONDARY_METRIC,
-                "results": [_anonymize(r, label) for r in lb_cache.get()]}
+                "results": [tag(r) for r in lb_cache.get()]}
 
     @app.post("/api/me")
     async def me(ndif_api_key: str | None = Header(default=None,
