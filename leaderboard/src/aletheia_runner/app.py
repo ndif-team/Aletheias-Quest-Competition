@@ -496,6 +496,15 @@ def create_app(config: RunnerConfig, store: BaseResultStore,
         if not ndif_api_key:
             raise HTTPException(400, "an NDIF API key is required (X-NDIF-API-Key)")
 
+        # A method category is mandatory: every entry must declare white-box or
+        # black-box. Normalize once here and reject up front (before any NDIF call or
+        # rate-limit charge) if it's missing or unrecognized.
+        method_tag = _normalize_tag(method_tag)
+        if method_tag is None:
+            raise HTTPException(
+                400, "a method category is required: submit with --tag white "
+                     "(white-box) or --tag black (black-box).")
+
         # Validate the key against NDIF and decide which key drives the run, before
         # binding a team or charging a rate-limit attempt. whoami returns the
         # account (or null email for a key NDIF doesn't recognise), or None when

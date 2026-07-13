@@ -59,11 +59,13 @@ def _zip_with_fixture() -> bytes:
     return buf.getvalue()
 
 
-def _post(client, *, team=None, key="key-1"):
+def _post(client, *, team=None, key="key-1", tag="white"):
     data = {}
     if team is not None:
         data["team"] = team
     headers = {"X-NDIF-API-Key": key} if key else {}
+    if tag:                                   # a method tag is mandatory; default valid
+        headers["X-Aletheia-Tag"] = tag
     return client.post("/submit", data=data,
                        files={"file": ("s.zip", _zip_with_fixture(), "application/zip")},
                        headers=headers)
@@ -110,10 +112,19 @@ def test_method_tag_recorded_normalized_and_on_desk(client):
     assert next(r for r in rows if r["team"] == "wb")["tag"] == "white"
     me = client.post("/api/me", headers={"X-NDIF-API-Key": "key-w"}).json()
     assert me["submissions"][0]["tag"] == "white"
-    # An unrecognized tag is ignored (recorded as untagged), never rejected.
-    assert _post_tagged(client, team="ut", key="key-x", tag="green").status_code == 200
-    me2 = client.post("/api/me", headers={"X-NDIF-API-Key": "key-x"}).json()
-    assert me2["submissions"][0]["tag"] is None
+    # An unrecognized tag is rejected (a valid category is mandatory), not silently
+    # recorded as untagged.
+    assert _post_tagged(client, team="ut", key="key-x", tag="green").status_code == 400
+
+
+def test_method_tag_is_mandatory(client):
+    # No tag -> 400 up front, before charging a rate-limit attempt.
+    r = _post(client, team="team-a", key="key-a", tag=None)
+    assert r.status_code == 400
+    assert "category" in r.json()["detail"].lower()
+    # The rejected attempt didn't consume the team's rate budget: a valid submission
+    # still succeeds.
+    assert _post(client, team="team-a", key="key-a", tag="white").status_code == 200
 
 
 def test_admin_endpoints_disabled_without_token(client):
@@ -169,7 +180,8 @@ def test_submit_streams_progress_when_accept_sse(client):
     with client.stream(
             "POST", "/submit", data={"team": "team-s"},
             files={"file": ("s.zip", _zip_with_fixture(), "application/zip")},
-            headers={"X-NDIF-API-Key": "key-s", "Accept": "text/event-stream"}) as r:
+            headers={"X-NDIF-API-Key": "key-s", "X-Aletheia-Tag": "white",
+                     "Accept": "text/event-stream"}) as r:
         assert r.status_code == 200
         assert "text/event-stream" in r.headers["content-type"]
         events = _parse_sse(r.iter_lines())
@@ -312,7 +324,7 @@ def test_submit_rejects_more_than_one_notebook(client):
         zf.writestr("submission/b.ipynb", nb)
     r = client.post("/submit", data={"team": "team-a"},
                     files={"file": ("s.zip", buf.getvalue(), "application/zip")},
-                    headers={"X-NDIF-API-Key": "key-a"})
+                    headers={"X-NDIF-API-Key": "key-a", "X-Aletheia-Tag": "white"})
     assert r.status_code == 400
     assert "one notebook" in r.json()["detail"]
 
@@ -422,7 +434,7 @@ def test_rejected_submission_does_not_consume_an_attempt(tmp_path):
         zf.writestr("submission/b.ipynb", nb)
     rejected = client.post("/submit", data={"team": "team-a"},
                            files={"file": ("s.zip", two_nbs.getvalue(), "application/zip")},
-                           headers={"X-NDIF-API-Key": "key-a"})
+                           headers={"X-NDIF-API-Key": "key-a", "X-Aletheia-Tag": "white"})
     assert rejected.status_code == 400
 
     # The team's one attempt is still available: a valid submission now succeeds.
@@ -471,7 +483,7 @@ def test_concurrent_submissions_bounded_and_all_recorded(tmp_path, monkeypatch):
                 return await ac.post(
                     "/submit", data={"team": f"team-{i}"},
                     files={"file": ("s.zip", _zip_with_fixture(), "application/zip")},
-                    headers={"X-NDIF-API-Key": f"key-{i}"})
+                    headers={"X-NDIF-API-Key": f"key-{i}", "X-Aletheia-Tag": "white"})
             return await asyncio.gather(*[one(i) for i in range(n)])
 
     resps = asyncio.run(fire(4))

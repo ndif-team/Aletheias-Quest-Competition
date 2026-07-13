@@ -488,6 +488,9 @@ def main(argv: list[str] | None = None) -> None:
     args = p.parse_args(argv)
     if args.limit is not None and args.limit <= 0:
         p.error("--limit must be a positive integer")
+    if not args.dry and not args.tag:
+        p.error("--tag is required for a real submission — declare your method "
+                "category: --tag white (white-box) or --tag black (black-box)")
 
     args.ndif_api_key = _resolve_ndif_key(args.ndif_api_key)
     if not args.ndif_api_key:
