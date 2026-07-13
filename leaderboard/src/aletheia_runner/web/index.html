@@ -109,7 +109,8 @@
     .filterbar button.active { color: var(--paper); background: var(--ink); border-color: var(--ink); }
     .filterbar button.active .tag { border-color: var(--paper); }
     .filterbar button.active .tag.black { background: var(--paper); }
-    .filterbar .dq-toggle { margin-left: 14px; }
+    .filterbar .allsubs-toggle { margin-left: 14px; }
+    .filterbar .dq-toggle { margin-left: 6px; }
     .filterbar .dq-toggle::before { content: "\26A0"; margin-right: 0.5em; color: #c0392b; }
     .filterbar .dq-toggle.active { color: var(--paper); background: #c0392b; border-color: #c0392b; }
     .filterbar .dq-toggle.active::before { color: var(--paper); }
@@ -332,6 +333,7 @@
       <button data-tag="all" class="active" onclick="setFilter('all')">All</button>
       <button data-tag="white" onclick="setFilter('white')"><span class="tag white"></span>White-box</button>
       <button data-tag="black" onclick="setFilter('black')"><span class="tag black"></span>Black-box</button>
+      <button id="allsubs-toggle" class="allsubs-toggle" onclick="toggleAllSubs()" title="Show every submission (only each team's best is ranked)">Show all submissions</button>
       <button id="dq-toggle" class="dq-toggle" onclick="toggleDisqualified()" title="Show submissions disqualified for a rule violation">Show disqualified</button>
     </div>
 
@@ -365,6 +367,7 @@
     let currentPage = 1;          // 1-based page of the ledger
     const PAGE_SIZE = 20;         // entrants shown per page
     let showDisqualified = false; // DQ'd submissions are hidden unless this is on
+    let showAllSubs = false;      // collapse to each team's best unless this is on
 
     // Little box glyph for a method tag (hollow = white-box, filled = black-box).
     function tagBadge(tag) {
@@ -399,6 +402,13 @@
       showDisqualified = !showDisqualified;
       currentPage = 1;
       document.getElementById("dq-toggle").classList.toggle("active", showDisqualified);
+      renderBoard();
+    }
+
+    function toggleAllSubs() {
+      showAllSubs = !showAllSubs;
+      currentPage = 1;
+      document.getElementById("allsubs-toggle").classList.toggle("active", showAllSubs);
       renderBoard();
     }
 
@@ -479,12 +489,22 @@
       // Disqualified submissions are hidden unless the "show disqualified" toggle is on.
       const shown = showDisqualified ? rows : rows.filter(r => !r.invalid);
       const dqHidden = rows.length - shown.length;
+      // By default, collapse to each team's single best (top) submission. The "show
+      // all submissions" toggle expands to every row. Rows are score-sorted, so the
+      // first row seen for a team is that team's best.
+      let visible = shown;
+      if (!showAllSubs) {
+        const seenTeam = new Set();
+        visible = shown.filter(r => seenTeam.has(r.team) ? false : (seenTeam.add(r.team), true));
+      }
+      const collapsed = shown.length - visible.length;
       let scope = tagFilter === "all" ? "" : `     /     ${tagFilter}-box only`;
       if (dqHidden > 0) scope += `     /     ${dqHidden} disqualified hidden`;
+      if (collapsed > 0) scope += `     /     ${collapsed} more submission${collapsed === 1 ? "" : "s"} hidden`;
       const now = new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-      meta.textContent = `Ranked by ${primary}     /     ${shown.length} entr${shown.length === 1 ? "y" : "ies"}${scope}     /     revised ${now}`;
+      meta.textContent = `Ranked by ${primary}     /     ${visible.length} entr${visible.length === 1 ? "y" : "ies"}${scope}     /     revised ${now}`;
 
-      if (!shown.length) {
+      if (!visible.length) {
         const msg = tagFilter === "all"
           ? "The ledger stands empty. Be the first to be recorded."
           : `No ${tagFilter}-box submissions recorded yet.`;
@@ -492,16 +512,17 @@
         return;
       }
 
-      // Assign competitive ranks across the FULL view, SKIPPING de-ranked rows —
-      // baselines (reference) and invalid/disqualified submissions. Both still show
-      // in score order; they just don't take a rank. Then paginate.
+      // Rank only each team's TOP (best) valid submission: baselines and invalid rows
+      // never take a rank, and (when expanded) a team's lower submissions don't either.
+      // Rows are score-sorted, so a team's first rankable row is its best.
       let rank = 0;
-      const ranked = shown.map(r => {
+      const rankedTeams = new Set();
+      const ranked = visible.map(r => {
         const isBase = !!r.baseline, isInvalid = !!r.invalid;
-        const deranked = isBase || isInvalid;
-        if (!deranked) rank++;
-        return { r, isBase, isInvalid, rank: deranked ? null : rank,
-                 leader: !deranked && rank === 1 };
+        const rankable = !isBase && !isInvalid && !rankedTeams.has(r.team);
+        if (rankable) { rank++; rankedTeams.add(r.team); }
+        return { r, isBase, isInvalid, rank: rankable ? rank : null,
+                 leader: rankable && rank === 1 };
       });
 
       const totalPages = Math.max(1, Math.ceil(ranked.length / PAGE_SIZE));
@@ -516,8 +537,8 @@
         const delay = firstRender ? (0.55 + j * 0.05).toFixed(2) + "s" : "0s";
         const rankCell = isInvalid
           ? dqMark(r.invalid_reason)
-          : (isBase ? `<span class="num base-mark">&middot;</span>`
-                    : `<span class="num">${row.rank}</span>`);
+          : (row.rank !== null ? `<span class="num">${row.rank}</span>`
+                               : `<span class="num base-mark">&middot;</span>`);
         const chip = isBase ? `<span class="base-chip">baseline</span>` : "";
         return `
           <tr class="row ${row.leader ? "leader" : ""} ${isBase ? "baseline" : ""} ${isInvalid ? "invalid" : ""}" data-i="${gi}" style="animation-delay:${delay}" onclick="toggleRow(${gi})">
