@@ -495,7 +495,12 @@
       let visible = shown;
       if (!showAllSubs) {
         const seenTeam = new Set();
-        visible = shown.filter(r => seenTeam.has(r.team) ? false : (seenTeam.add(r.team), true));
+        visible = shown.filter(r => {
+          if (r.baseline) return true;              // always show every baseline reference row
+          if (seenTeam.has(r.team)) return false;   // other teams collapse to their best
+          seenTeam.add(r.team);
+          return true;
+        });
       }
       const collapsed = shown.length - visible.length;
       let scope = tagFilter === "all" ? "" : `     /     ${tagFilter}-box only`;
