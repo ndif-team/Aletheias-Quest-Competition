@@ -25,6 +25,7 @@ import os
 import sys
 import threading
 import time
+import uuid
 import zipfile
 from pathlib import Path
 
@@ -353,14 +354,30 @@ def _resolve_hf_token(arg_token: str | None) -> str | None:
         return None
 
 
+def _clean_key(v: str | None) -> str | None:
+    """A key value, or None if ``v`` is absent/blank or a stringified null.
+
+    Guards the common footguns: ``$NDIF_API_KEY`` exported-but-empty, or set to
+    the literal string ``None``/``null`` (e.g. from ``export NDIF_API_KEY=$(cmd
+    that printed None)``). Sending those verbatim passes the server's "key
+    present?" check but hangs its whoami lookup, so we drop them here."""
+    if v is None:
+        return None
+    v = v.strip()
+    if not v or v.lower() in ("none", "null", "nil"):
+        return None
+    return v
+
+
 def _resolve_ndif_key(arg_key: str | None) -> str | None:
     """--ndif-api-key / $NDIF_API_KEY, else the key nnsight already has saved
     (CONFIG.API.APIKEY, e.g. from `CONFIG.set_default_api_key(...)`)."""
-    if arg_key:
-        return arg_key
+    key = _clean_key(arg_key)
+    if key:
+        return key
     try:
         from nnsight import CONFIG
-        return CONFIG.API.APIKEY or None
+        return _clean_key(CONFIG.API.APIKEY)
     except Exception:
         return None
 
@@ -496,6 +513,15 @@ def main(argv: list[str] | None = None) -> None:
     if not args.ndif_api_key:
         p.error("--ndif-api-key (or $NDIF_API_KEY, or a key saved in nnsight's "
                 "CONFIG) is required")
+    # An NDIF key is a UUID. Reject anything else here rather than sending it: a
+    # malformed key sails past the Space's "key present?" check and then stalls
+    # its whoami lookup, which — with no client timeout — looks like a hung run.
+    try:
+        uuid.UUID(str(args.ndif_api_key))
+    except (ValueError, AttributeError, TypeError):
+        p.error(f"NDIF API key {args.ndif_api_key!r} is not a valid key "
+                "(expected a UUID like 1234abcd-56ef-...). Check --ndif-api-key "
+                "/ $NDIF_API_KEY / the key saved in nnsight's CONFIG.")
 
     _banner()
     hf_token = _resolve_hf_token(args.hf_token)
